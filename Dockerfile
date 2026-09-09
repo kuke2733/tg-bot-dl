@@ -1,0 +1,36 @@
+FROM python:3.13-slim AS builder
+
+WORKDIR /build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+
+FROM python:3.13-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    IN_DOCKER=1 \
+    DOWNLOAD_FOLDER=/data \
+    CONFIG_FOLDER=/config \
+    WEB_HOST=0.0.0.0 \
+    WEB_PORT=8080
+
+WORKDIR /app
+
+COPY --from=builder /install /usr/local
+COPY start.py ./
+COPY bot ./bot
+COPY web ./web
+
+RUN mkdir -p /data /config
+
+EXPOSE 8080
+
+VOLUME ["/data", "/config"]
+
+CMD ["python", "start.py"]
