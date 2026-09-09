@@ -1,4 +1,9 @@
-# Telegram Downloader Bot
+
+<p align="center">
+  <a href="https://github.com/kuke2733/tg-bot-dl"><img src="https://img.shields.io/badge/GitHub-kuke2733%2Ftg--bot--dl-181717?logo=github&logoColor=white" alt="GitHub"></a>
+  &nbsp;
+  <a href="https://hub.docker.com/r/guyongbo/tg-bot-dl"><img src="https://img.shields.io/badge/DockerHub-guyongbo%2Ftg--bot--dl-2496ED?logo=docker&logoColor=white" alt="Docker Hub"></a>
+</p>
 
 一个基于 [Pyrogram] MTProto 框架开发的 **Telegram 文件下载机器人**。无需持续开启 Telegram 客户端或使用复杂的 CLI 工具，即可直接将 Telegram 中的文件（最高支持单文件 **4GB**）高速下载到你的服务器或本地存储中。
 
@@ -106,10 +111,10 @@ docker pull ghcr.io/kuke2733/tg-bot-dl:latest
 | `/start` | 启动机器人并查看欢迎信息 |
 | `/help` | 查看详细帮助与命令说明 |
 | `/usage` | 查看当前下载目录所在磁盘的总容量、已用空间和剩余空间 |
-| `/use <子路径>` | 切换后续下载文件的存放子目录（如 `/use movies/action`） |
+| `/use 子路径` | 切换后续下载文件的存放子目录（如 `/use movies/action`）,注意空格分隔 |
 | `/get` | 查看当前正在使用的下载目录相对路径 |
 | `/leave` | 重置回根下载目录（`/`） |
-| `/add <消息链接> [重命名]` | 从禁止转发/受限频道中通过消息链接下载文件 |
+| `/add 消息链接 重命名` | 从禁止转发/受限频道中通过消息链接下载文件,注意空格分隔 |
 
 ---
 
@@ -122,7 +127,7 @@ docker pull ghcr.io/kuke2733/tg-bot-dl:latest
 1. **转发附带名字**：先到名字、再到文件，自动套用
 2. **回复下载进度消息**：回复进度消息，发新名字（如 `电影`）
 3. **写在文件说明里**：说明里直接写 `电影`
-4. **`/add` 命令**：`/add <链接> 电影`
+4. **`/add` 命令**：`/add 链接 电影`
 
 一次发送多个文件（相册）会保存到同一个文件夹；此时改名只改文件夹名，不改组内文件名。单个文件不建文件夹。
 
@@ -174,7 +179,3 @@ docker pull ghcr.io/kuke2733/tg-bot-dl:latest
 ## 📄 开源许可证
 
 本项目基于 [MIT 许可证](LICENSE) 开源。
-
-[Pyrogram]: https://github.com/pyrogram/pyrogram
-[My Telegram]: https://my.telegram.org
-[BotFather]: https://t.me/BotFather
