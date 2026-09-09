@@ -1,4 +1,5 @@
 import logging
+import sys
 from os import getenv, mkdir
 from pathlib import Path
 
@@ -6,6 +7,8 @@ from dotenv import load_dotenv
 from pyrogram.client import Client
 from pyrogram.connection.transport.tcp.tcp import TCP
 from pyrogram.session.session import Session
+
+from bot.version import APP_VERSION, DEVICE_MODEL
 
 # 走代理时默认 2 秒超时太短，会话会不停重启，文件消息就收不到
 Session.START_TIMEOUT = 20
@@ -33,16 +36,16 @@ load_dotenv(Path(CONFIG_FOLDER) / 'settings.env')
 BASE_FOLDER, CONFIG_FOLDER = default_folders()
 DL_FOLDER = BASE_FOLDER
 
-# 配置日志
-log_level = logging.INFO if getenv('DEBUG') else logging.WARN
+DEBUG = bool(getenv('DEBUG'))
 logging.basicConfig(
-    level=log_level,
+    level=logging.DEBUG if DEBUG else logging.WARNING,
     format='%(levelname)s:%(name)s:%(message)s',
-    handlers=[logging.StreamHandler()]
+    handlers=[logging.StreamHandler()],
+    force=True,
 )
+logging.getLogger('pyrogram').setLevel(logging.INFO if DEBUG else logging.WARNING)
+logging.getLogger('pyrogram.connection').setLevel(logging.WARNING)
 
-# 确保日志使用 UTF-8 编码
-import sys
 for handler in logging.root.handlers:
     if hasattr(handler, 'stream') and hasattr(handler.stream, 'reconfigure'):
         try:
@@ -115,6 +118,8 @@ app = Client(
     bot_token=BOT_TOKEN,
     workdir=CONFIG_FOLDER,
     proxy=PROXY,
+    device_model=DEVICE_MODEL,
+    app_version=APP_VERSION,
     max_concurrent_transmissions=MAX_SIMULTANEOUS_TRANSMISSIONS,
 )
 
@@ -128,5 +133,7 @@ if PHONE_NUMBER:
         workdir=CONFIG_FOLDER,
         proxy=PROXY,
         no_updates=True,
+        device_model=DEVICE_MODEL,
+        app_version=APP_VERSION,
         max_concurrent_transmissions=MAX_SIMULTANEOUS_TRANSMISSIONS,
     )

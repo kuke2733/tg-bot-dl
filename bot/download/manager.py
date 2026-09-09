@@ -79,8 +79,8 @@ async def run() -> None:
 async def safe_edit(message, text: str, **kwargs) -> None:
     try:
         await message.edit(text=text, **kwargs)
-    except Exception:
-        logging.debug("更新下载消息失败", exc_info=True)
+    except Exception as exc:
+        logging.debug("更新下载消息失败：%s: %s", type(exc).__name__, exc)
 
 
 def batch_keyboard(batch: Batch) -> InlineKeyboardMarkup:
@@ -249,27 +249,70 @@ def cleanup_partial_download(save_path: str, filename: str) -> None:
         logging.debug("无法删除文件：%s", save_path, exc_info=True)
 
 
-async def handle_stopped_download(download: Download, item: BatchItem | None, save_path: str) -> None:
-    """处理被停止的下载"""
-    if download.id in stop:
-        try:
-            stop.remove(download.id)
-        except ValueError:
-            pass
+def mark_download_stopped(download: Download) -> None:
+    download.stopped = True
+    download.ui_seq += 1
+    if download.id not in stop:
+        stop.append(download.id)
 
+
+def find_download_by_id(download_id: int) -> Download | None:
+    for item in list(rename_targets.values()):
+        if item.id == download_id:
+            return item
+    for item in downloads:
+        if item.id == download_id:
+            return item
+    return None
+
+
+def _pop_stop(download_id: int) -> None:
+    try:
+        stop.remove(download_id)
+    except ValueError:
+        pass
+
+
+async def replace_progress_message(download: Download, text: str) -> None:
+    # 空 inline 键盘非法，删除旧进度消息再发一条纯文字
+    progress = download.progress_message
+    chat = progress.chat if progress else None
+    if chat is None:
+        return
+    reply_to = download.from_message.id if download.from_message else None
+    try:
+        await progress.delete()
+    except Exception as exc:
+        logging.debug("删除进度消息失败：%s: %s", type(exc).__name__, exc)
+        await safe_edit(progress, text, parse_mode=ParseMode.MARKDOWN)
+        return
+    try:
+        download.progress_message = await download.client.send_message(
+            chat.id,
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_to_message_id=reply_to,
+        )
+    except Exception as exc:
+        logging.debug("发送停止提示失败：%s: %s", type(exc).__name__, exc)
+
+
+async def finalize_single_stopped(download: Download, save_path: str) -> None:
+    mark_download_stopped(download)
+    _pop_stop(download.id)
     cleanup_partial_download(save_path, download.filename)
+    await replace_progress_message(download, "已停止并删除")
 
+
+async def handle_stopped_download(download: Download, item: BatchItem | None, save_path: str) -> None:
     if item:
         item.status = "deleted"
-
     if download.batch:
+        _pop_stop(download.id)
+        cleanup_partial_download(save_path, download.filename)
         await finish_batch_item(download.batch)
-    else:
-        await safe_edit(
-            download.progress_message,
-            f"已停止并删除 `{download.filename}`。",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        return
+    await finalize_single_stopped(download, save_path)
 
 
 async def start_download_progress(download: Download, item: BatchItem | None) -> None:
@@ -376,18 +419,17 @@ async def downloadFile(download: Download) -> None:
         download.started = time()
 
         async def on_retry(attempt: int, exc: BaseException, resumed: int) -> None:
-            size_hint = f"从 {humanReadableSize(resumed)} " if resumed else ""
             logging.warning(
-                "续传 %s（第 %d 次）：%s",
+                "续传 %s（第 %d 次）：%s，已有 %s",
                 download.filename,
                 attempt,
                 type(exc).__name__,
+                humanReadableSize(resumed) if resumed else "0",
             )
             if download.batch is None and download.progress_message:
                 await safe_edit(
                     download.progress_message,
-                    f"`{download.filename}` 下载中断，正在{size_hint}续传（第 {attempt} 次）…\n"
-                    f"原因：{type(exc).__name__}",
+                    f"`{download.filename}` 中断，正在续传（第 {attempt} 次）...",
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=InlineKeyboardMarkup(
                         [[InlineKeyboardButton("停止", callback_data=f"stop {download.id}")]]
@@ -407,9 +449,13 @@ async def downloadFile(download: Download) -> None:
         # 下载失败或被中断
         if not isinstance(result, str):
             if item:
-                item.status = "stopped" if download.batch and download.batch.stopped else "failed"
+                item.status = "stopped" if download.stopped or (download.batch and download.batch.stopped) else "failed"
             if download.batch:
                 await finish_batch_item(download.batch)
+            elif download.stopped or download.id in stop:
+                await finalize_single_stopped(download, save_path)
+            else:
+                await handle_download_failure(download, item)
             return
 
         # 下载成功
@@ -426,25 +472,12 @@ async def downloadFile(download: Download) -> None:
 
 def createProgress(client: Client):
     async def progress(received: int, total: int, download: Download) -> None:
-        if download.batch and download.batch.stopped:
+        if download.stopped or (download.batch and download.batch.stopped) or download.id in stop:
+            mark_download_stopped(download)
             client.stop_transmission()
-            return
-        if download.id in stop:
-            client.stop_transmission()
-            try:
-                stop.remove(download.id)
-            except ValueError:
-                pass
-            asyncio.create_task(
-                safe_edit(
-                    download.progress_message,
-                    f"已停止下载 `{download.filename}`。",
-                    parse_mode=ParseMode.MARKDOWN,
-                )
-            )
             return
 
-        # 进度刷新不能阻塞下载：每个分片都会回调这里，await 发消息会明显拖慢速度
+        # 进度用 create_task，避免 await 发消息拖慢下载
         now = time()
         if download.last_update != 0 and (now - download.last_update) < 1.5:
             return
@@ -470,6 +503,8 @@ def createProgress(client: Client):
         else:
             speed_line = f"{humanReadableSize(avg_speed)}/s"
 
+        seq = download.ui_seq
+
         if download.batch:
             item = resolve_batch_item(download)
             if item is not None:
@@ -477,25 +512,38 @@ def createProgress(client: Client):
                 item.name = Path(download.filename).name
                 item.received = received
                 item.total = total
-            asyncio.create_task(refresh_batch(download.batch))
+            batch = download.batch
+
+            async def _refresh():
+                if download.stopped or download.ui_seq != seq:
+                    return
+                await refresh_batch(batch)
+
+            asyncio.create_task(_refresh())
             return
 
-        asyncio.create_task(
-            safe_edit(
-                download.progress_message,
-                dedent(
-                    f"""
-                    `{download.filename}`：
-                    __{size_line}
-                    {speed_line}__
-                    """
-                ),
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("停止", callback_data=f"stop {download.id}")]]
-                ),
-            )
+        text = dedent(
+            f"""
+            `{download.filename}`：
+            __{size_line}
+            {speed_line}__
+            """
         )
+        markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("停止", callback_data=f"stop {download.id}")]]
+        )
+
+        async def _edit_progress():
+            if download.stopped or download.ui_seq != seq:
+                return
+            await safe_edit(
+                download.progress_message,
+                text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=markup,
+            )
+
+        asyncio.create_task(_edit_progress())
 
     return progress
 
@@ -552,5 +600,12 @@ async def stopDownload(_, callback: CallbackQuery) -> None:
 
     # 单次停止
     download_id = int(data.split()[-1])
-    stop.append(download_id)
+    target = find_download_by_id(download_id)
+    if target is None:
+        await callback.answer("任务已结束")
+        return
+    if target.stopped:
+        await callback.answer("已停止")
+        return
+    mark_download_stopped(target)
     await callback.answer("正在停止...")

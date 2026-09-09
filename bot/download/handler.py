@@ -129,12 +129,14 @@ async def enqueue_file(
     real_file = os.path.join(directory, filename)
     target = reply_to or message
     if any(item.id == message.id or item.filename == rel for item in downloads):
+        logging.debug("跳过重复任务：%s %s", message.id, rel)
         return
     batch_item = None
     if batch is not None:
         batch_item = BatchItem(download_id=message.id, name=filename, status="waiting")
         batch.items.append(batch_item)
     if os.path.isfile(real_file):
+        logging.debug("本地已存在：%s", real_file)
         if batch_item is not None:
             batch_item.status = "done"
             return
@@ -243,13 +245,21 @@ async def enqueue_messages(
 
 
 async def addFile(_, message: Message) -> None:
-    consumed = await groups.add(
-        message,
-        app,
-        lambda items, notice: enqueue_messages(items, app, notice=notice),
-    )
-    if not consumed:
-        await enqueue_file(message, app, reply_to=message)
+    try:
+        consumed = await groups.add(
+            message,
+            app,
+            lambda items, notice: enqueue_messages(items, app, notice=notice),
+        )
+        if not consumed:
+            await enqueue_file(message, app, reply_to=message)
+    except Exception:
+        logging.exception("处理文件失败：%s", message.id)
+        try:
+            await message.reply("处理这个文件时出错了，请看日志。", quote=True)
+        except Exception:
+            pass
+        raise
 
 
 async def addFileFromUser(fileMessage: Message, linkMessage: Message) -> None:

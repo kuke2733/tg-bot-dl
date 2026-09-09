@@ -92,6 +92,7 @@ def register(app: Client):
     addCommand(app, leaveFolder, "leave")
     addCommand(app, getFolder, "get")
     addCommand(app, addByLink, "add")
+    app.add_handler(MessageHandler(onIncomingMessage), group=-100)
     app.add_handler(
         MessageHandler(checkAdmins(download_handler.addFile), document | media)
     )
@@ -99,6 +100,37 @@ def register(app: Client):
         MessageHandler(checkAdmins(download_handler.renameFromText), text)
     )
     app.add_handler(CallbackQueryHandler(download_manager.stopDownload))
+
+
+UNAVAILABLE_HINTS = (
+    "temporarily suspended",
+    "group has been temporarily",
+    "channel can't be displayed",
+    "message is not available",
+    "this message is unavailable",
+)
+
+
+async def onIncomingMessage(_, message: Message):
+    media = getattr(message.media, "value", message.media) if message.media else None
+    logging.debug(
+        "消息 chat=%s from=%s id=%s media=%s text=%r",
+        getattr(message.chat, "id", None),
+        getattr(message.from_user, "id", None),
+        message.id,
+        media,
+        (message.text or message.caption or "")[:80],
+    )
+    if media:
+        return
+
+    body = f"{message.text or ''} {message.caption or ''}".lower()
+    if not any(hint in body for hint in UNAVAILABLE_HINTS):
+        return
+    try:
+        await message.reply("当前消息存在问题，请隐藏发送者名称后重新发送", quote=True)
+    except Exception:
+        logging.debug("回复失败", exc_info=True)
 
 
 async def set_menu(app: Client):

@@ -59,3 +59,5 @@ class Download:
     batch: Batch | None = None
     batch_item: BatchItem | None = None
     pending_rename: str | None = None
+    stopped: bool = False
+    ui_seq: int = 0

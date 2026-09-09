@@ -24,6 +24,7 @@ tg-bot-dl/
 │
 ├── bot/                     Telegram 机器人
 │   ├── app.py               读取配置，创建 Telegram 连接
+│   ├── version.py           应用名、版本号、上报给 TG 的设备信息
 │   ├── run.py               机器人启动与退出
 │   ├── commands.py          /start /help 等命令和中文回复
 │   ├── folder.py            当前下载目录
@@ -104,6 +105,7 @@ python start.py
 | 文件 | 作用 |
 | :--- | :--- |
 | `bot/app.py` | 读取环境变量和 `config/settings.env`，创建机器人客户端 `app`，如果填了手机号再创建用户客户端 `user`。代理也在这里生效。 |
+| `bot/version.py` | 应用名、版本号，以及上报给 Telegram 的设备信息。 |
 | `bot/run.py` | 启动顺序：注册命令 → 登录 → 启动下载队列 → 等待消息。 |
 | `bot/commands.py` | `/start`、`/help`、`/usage`、`/use`、`/get`、`/leave`、`/add`，以及命令菜单。 |
 | `bot/folder.py` | 记住当前保存目录。`/use` 切换，`/leave` 回到 `data/`。 |
