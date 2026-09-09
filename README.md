@@ -84,6 +84,16 @@ docker run -d --name tg-bot-dl \
 
 容器内代理若填 `127.0.0.1`，会自动改写为宿主机地址 `host.docker.internal`。
 
+推送到 `main`/`master` 或打 `v*` 标签后，GitHub Actions 会同时发布到 Docker Hub 与 GHCR（需先在仓库 Secrets 配置 `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`）。拉取示例：
+
+```bash
+# Docker Hub（把 USER 换成你的 Docker Hub 用户名）
+docker pull USER/tg-bot-dl:latest
+
+# GitHub Container Registry
+docker pull ghcr.io/kuke2733/tg-bot-dl:latest
+```
+
 
 ---
 
