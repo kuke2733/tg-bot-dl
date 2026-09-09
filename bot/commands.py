@@ -128,7 +128,7 @@ async def onIncomingMessage(_, message: Message):
     if not any(hint in body for hint in UNAVAILABLE_HINTS):
         return
     try:
-        await message.reply("当前消息存在问题，请隐藏发送者名称后重新发送", quote=True)
+        await message.reply("当前消息存在问题，请隐藏发送者名称后重新发送")
     except Exception:
         logging.debug("回复失败", exc_info=True)
 

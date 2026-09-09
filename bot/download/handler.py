@@ -11,6 +11,7 @@ from bot import folder
 from bot.app import app, user
 from bot.download.groups import MediaGroupCollector
 from bot.download.manager import (
+    active_batches,
     downloads,
     find_rename_target,
     refresh_batch,
@@ -35,7 +36,7 @@ from bot.util import humanReadableSize
 
 
 groups = MediaGroupCollector()
-# chat_id -> (name, timestamp) 用于“先名字、后文件”（转发附带留言）
+# chat_id -> (name, timestamp)，转发时「先名字后文件」
 PENDING_RENAMES: dict[int, tuple[str, float]] = {}
 RENAME_WINDOW_SECONDS = 30.0
 
@@ -62,6 +63,27 @@ def take_pending_rename(chat_id: int | None) -> str | None:
     return name
 
 
+async def _status_message(
+    client,
+    chat_id: int,
+    text: str,
+    reply_to_id: int,
+    seed: Message | None = None,
+) -> Message:
+    if seed is not None:
+        try:
+            await seed.edit(text, parse_mode=ParseMode.MARKDOWN)
+            return seed
+        except Exception:
+            logging.debug("编辑状态消息失败，改为新发", exc_info=True)
+    return await client.send_message(
+        chat_id,
+        text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_to_message_id=reply_to_id,
+    )
+
+
 async def apply_rename(download: Download, raw_name: str) -> str:
     filename = with_media_extension(raw_name, download.from_message)
     if download.started:
@@ -85,8 +107,7 @@ async def apply_rename(download: Download, raw_name: str) -> str:
         size_text = f"（{humanReadableSize(size)}）" if size else ""
         await safe_edit(
             download.progress_message,
-            f"文件 `{download.filename}` 已加入下载队列{size_text}。\n"
-            f"想改名请回复本条进度消息，直接发新名字。",
+            f"文件 `{download.filename}` 已加入下载队列{size_text}。",
             parse_mode=ParseMode.MARKDOWN,
         )
     return download.filename
@@ -118,6 +139,7 @@ async def enqueue_file(
     use_caption_name: bool = True,
     used_names: set[str] | None = None,
     batch: Batch | None = None,
+    progress_seed: Message | None = None,
 ) -> None:
     if not override and batch is None:
         override = take_pending_rename(_chat_id(reply_to or message))
@@ -131,45 +153,49 @@ async def enqueue_file(
     if any(item.id == message.id or item.filename == rel for item in downloads):
         logging.debug("跳过重复任务：%s %s", message.id, rel)
         return
+
     batch_item = None
     if batch is not None:
         batch_item = BatchItem(download_id=message.id, name=filename, status="waiting")
         batch.items.append(batch_item)
+
     if os.path.isfile(real_file):
         logging.debug("本地已存在：%s", real_file)
         if batch_item is not None:
             batch_item.status = "done"
             return
-        await target.reply(text=f"文件 `{rel}` 已经存在。", quote=True)
+        await target.reply(text=f"文件 `{rel}` 已经存在。")
         return
 
     size = media_file_size(message)
     if batch is None:
         size_text = f"（{humanReadableSize(size)}）" if size else ""
         logging.warning("收到文件，加入下载队列：%s %s", rel, size_text)
-        progress = await target.reply(
-            f"文件 `{rel}` 已加入下载队列{size_text}。\n"
-            f"想改名请回复本条进度消息，直接发新名字。",
-            quote=True,
-            parse_mode=ParseMode.MARKDOWN,
+        progress = await _status_message(
+            client,
+            target.chat.id,
+            f"文件 `{rel}` 已加入下载队列{size_text}。",
+            target.id,
+            progress_seed,
         )
     else:
         logging.warning("收到文件，加入下载队列：%s", rel)
         progress = batch.message
 
-    download = Download(
-        client=client,
-        id=message.id,
-        filename=rel,
-        from_message=message,
-        progress_message=progress,
-        expected_size=size,
-        size=size,
-        batch=batch,
-        batch_item=batch_item,
+    downloads.append(
+        Download(
+            client=client,
+            id=message.id,
+            filename=rel,
+            from_message=message,
+            progress_message=progress,
+            expected_size=size,
+            size=size,
+            batch=batch,
+            batch_item=batch_item,
+        )
     )
-    downloads.append(download)
-    register_rename_target(download)
+    register_rename_target(downloads[-1])
 
 
 async def enqueue_messages(
@@ -185,17 +211,13 @@ async def enqueue_messages(
     if not override:
         override = take_pending_rename(_chat_id(reply_to or messages[0]))
     if len(messages) == 1:
-        if notice:
-            try:
-                await notice.delete()
-            except Exception:
-                logging.debug("无法删除分组提示消息", exc_info=True)
         await enqueue_file(
             messages[0],
             client,
             reply_to=reply_to or messages[0],
             override=override,
             use_caption_name=True,
+            progress_seed=notice,
         )
         return
 
@@ -209,15 +231,7 @@ async def enqueue_messages(
         "回复本条消息可修改文件夹名称。"
     )
     target = reply_to or messages[0]
-    if notice:
-        try:
-            await notice.edit(summary, parse_mode=ParseMode.MARKDOWN)
-            status = notice
-        except Exception:
-            logging.debug("无法编辑分组提示消息", exc_info=True)
-            status = await target.reply(summary, quote=True, parse_mode=ParseMode.MARKDOWN)
-    else:
-        status = await target.reply(summary, quote=True, parse_mode=ParseMode.MARKDOWN)
+    status = await _status_message(client, target.chat.id, summary, target.id, notice)
 
     batch = Batch(
         id=str(getattr(messages[0], "media_group_id", messages[0].id)),
@@ -226,8 +240,6 @@ async def enqueue_messages(
         message=status,
         directory=os.path.join(folder.get(), subfolder),
     )
-
-    from bot.download.manager import active_batches
     active_batches[batch.id] = batch
 
     used_names: set[str] = set()
@@ -256,7 +268,7 @@ async def addFile(_, message: Message) -> None:
     except Exception:
         logging.exception("处理文件失败：%s", message.id)
         try:
-            await message.reply("处理这个文件时出错了，请看日志。", quote=True)
+            await message.reply("处理这个文件时出错了，请看日志。")
         except Exception:
             pass
         raise
@@ -280,7 +292,6 @@ async def addFileFromUser(fileMessage: Message, linkMessage: Message) -> None:
 
 
 async def renameFromText(_, message: Message) -> None:
-    """改名：回复进度消息；或先发名字再发文件。一组文件只改文件夹名。"""
     text = (message.text or "").strip()
     if not text or text.startswith("/"):
         return
@@ -299,12 +310,10 @@ async def renameFromText(_, message: Message) -> None:
                     batch = item.batch
                     break
 
-        # 一组文件：只允许改文件夹名
         if batch is not None:
             new_folder = await rename_batch_folder(batch, name)
             await message.reply(
                 f"文件夹已改为 `{new_folder}`。",
-                quote=True,
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
@@ -315,12 +324,10 @@ async def renameFromText(_, message: Message) -> None:
         note = " 下载完成后生效" if download.started else ""
         await message.reply(
             f"已重命名为 `{new_path}`{note}。",
-            quote=True,
             parse_mode=ParseMode.MARKDOWN,
         )
         return
 
-    # 没有回复：只作为“先名字后文件”的挂起名
     chat_id = _chat_id(message)
     if chat_id is not None:
         remember_pending_rename(chat_id, name)

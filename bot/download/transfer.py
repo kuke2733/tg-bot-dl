@@ -1,5 +1,3 @@
-"""进程内可续传下载：绕过 download_media，按 1MB 分片从 .temp 偏移继续拉。"""
-
 from __future__ import annotations
 
 import asyncio
@@ -44,17 +42,15 @@ def align_down(size: int) -> int:
 
 
 def prepare_temp_file(temp_path: str) -> int:
-    """对齐到整兆分片并返回可续传起点字节数。"""
     path = Path(temp_path)
     if not path.is_file():
         return 0
-
     size = path.stat().st_size
     aligned = align_down(size)
     if aligned < size:
         with path.open("rb+") as file:
             file.truncate(aligned)
-        logging.info("截断未对齐分片：%s %d -> %d", temp_path, size, aligned)
+        logging.debug("截断未对齐分片：%s %d -> %d", temp_path, size, aligned)
     return aligned
 
 
@@ -128,10 +124,7 @@ async def download_with_resume(
     file_size: int = 0,
     on_retry: RetryCallback | None = None,
 ) -> tuple[str | None, Message]:
-    """下载到 save_path。失败时保留 .temp 并从偏移续传。
-
-    返回 (最终路径 | 用户停止时为 None, 可能已刷新的 message)。
-    """
+    """下载到 save_path；失败保留 .temp 续传。停止时返回 (None, message)。"""
     temp_path = temp_path_for(save_path)
     attempt = 0
     flood_retries = 0
@@ -166,8 +159,7 @@ async def download_with_resume(
                 if asyncio.iscoroutine(result):
                     await result
             await asyncio.sleep(wait)
-            # 限流不消耗普通失败次数
-            attempt -= 1
+            attempt -= 1  # FloodWait 不计入普通失败次数
             continue
         except _FILE_REF_ERRORS as exc:
             logging.warning("file_reference 失效，刷新消息后续传：%s", save_path)

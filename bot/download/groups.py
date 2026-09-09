@@ -48,7 +48,11 @@ class MediaGroupCollector:
         async with self._lock:
             pending = self._pending.get(group_id)
             if pending is None:
-                notice = await message.reply("收到一组文件，正在整理...", quote=True)
+                notice = await client.send_message(
+                    message.chat.id,
+                    "收到一组文件，正在整理...",
+                    reply_to_message_id=message.id,
+                )
                 pending = PendingGroup(messages=[message], notice=notice)
                 pending.token = object()
                 pending.task = asyncio.create_task(
