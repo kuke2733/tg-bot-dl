@@ -13,6 +13,7 @@ class BatchItem:
     status: str = "waiting"
     received: int = 0
     total: int = 0
+    started: float = 0.0
 
 
 @dataclass

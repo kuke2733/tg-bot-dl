@@ -117,6 +117,19 @@ def resolve_batch_item(download: Download) -> BatchItem | None:
     return None
 
 
+def item_speed_line(item: BatchItem) -> str:
+    if item.status != "downloading" or not item.started or not item.received:
+        return ""
+    elapsed = max(time() - item.started, 1)
+    avg_speed = item.received / elapsed
+    if avg_speed <= 0:
+        return ""
+    if item.total and item.received < item.total:
+        tte = int((item.total - item.received) / avg_speed)
+        return f"{humanReadableSize(avg_speed)}/s，预计还需 {humanReadableTime(tte)}"
+    return f"{humanReadableSize(avg_speed)}/s"
+
+
 def render_item(item: BatchItem) -> str:
     mark = STATUS_MARK.get(item.status, "•")
     name = f"`{item.name}`"
@@ -128,10 +141,14 @@ def render_item(item: BatchItem) -> str:
         percent = min(100.0, item.received / item.total * 100)
         bar = progress_bar(percent)
         size = f"{humanReadableSize(item.received)}/{humanReadableSize(item.total)}"
-        return f"{mark} {name}  `{bar}` {percent:0.0f}% {size}"
-    if item.received:
-        return f"{mark} {name}  已下载 {humanReadableSize(item.received)}"
-    return f"{mark} {name}  下载中"
+        line = f"{mark} {name}  `{bar}` {percent:0.0f}% {size}"
+    elif item.received:
+        line = f"{mark} {name}  已下载 {humanReadableSize(item.received)}"
+    else:
+        return f"{mark} {name}  下载中"
+
+    speed = item_speed_line(item)
+    return f"{line}\n__{speed}__" if speed else line
 
 
 def render_batch(batch: Batch) -> str:
@@ -287,6 +304,8 @@ async def start_download_progress(download: Download, item: BatchItem | None) ->
         if item:
             item.status = "downloading"
             item.name = Path(download.filename).name
+            if not item.started:
+                item.started = time()
         await refresh_batch(download.batch, force=True)
         return
 
@@ -485,6 +504,7 @@ def createProgress(client: Client):
                 item.name = Path(download.filename).name
                 item.received = received
                 item.total = total
+                item.started = download.started or item.started or now
             batch = download.batch
 
             async def _refresh():
