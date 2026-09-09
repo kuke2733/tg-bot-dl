@@ -87,8 +87,8 @@ docker run -d --name tg-bot-dl \
 推送到 `main`/`master` 或打 `v*` 标签后，GitHub Actions 会同时发布到 Docker Hub 与 GHCR（需先在仓库 Secrets 配置 `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`）。拉取示例：
 
 ```bash
-# Docker Hub（把 USER 换成你的 Docker Hub 用户名）
-docker pull USER/tg-bot-dl:latest
+# Docker Hub
+docker pull guyongbo/tg-bot-dl:latest
 
 # GitHub Container Registry
 docker pull ghcr.io/kuke2733/tg-bot-dl:latest

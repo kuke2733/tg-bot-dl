@@ -15,6 +15,9 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 FROM python:3.13-slim
 
+ARG APP_VERSION=0.0.0
+LABEL org.opencontainers.image.version="${APP_VERSION}"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     IN_DOCKER=1 \

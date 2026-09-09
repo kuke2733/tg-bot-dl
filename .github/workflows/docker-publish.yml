@@ -20,6 +20,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Read VERSION
+        id: version
+        run: |
+          VERSION=$(python -c "exec(open('bot/version.py', encoding='utf-8').read()); print(VERSION)")
+          if [ -z "$VERSION" ]; then
+            echo "无法从 bot/version.py 读取 VERSION" >&2
+            exit 1
+          fi
+          MAJOR_MINOR=$(echo "$VERSION" | cut -d. -f1-2)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "major_minor=$MAJOR_MINOR" >> "$GITHUB_OUTPUT"
+          echo "使用版本：$VERSION（$MAJOR_MINOR）"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -48,9 +61,10 @@ jobs:
             ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=sha-
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=${{ steps.version.outputs.major_minor }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -61,5 +75,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
