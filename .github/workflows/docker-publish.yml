@@ -3,33 +3,84 @@ name: Publish Docker image
 on:
   push:
     branches: [main, master]
-    tags: ["v*"]
   workflow_dispatch:
 
 env:
   IMAGE_NAME: tg-bot-dl
 
 jobs:
-  build-and-push:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.detect.outputs.should_build }}
+      should_release: ${{ steps.detect.outputs.should_release }}
+      version: ${{ steps.detect.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect version commit
+        id: detect
+        run: |
+          set -euo pipefail
+
+          read_version() {
+            python -c "exec(open('$1', encoding='utf-8').read()); print(VERSION)"
+          }
+
+          VERSION=$(read_version bot/version.py)
+          if [ -z "$VERSION" ]; then
+            echo "无法从 bot/version.py 读取 VERSION" >&2
+            exit 1
+          fi
+
+          SHOULD_BUILD=false
+          SHOULD_RELEASE=false
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            SHOULD_BUILD=true
+            echo "手动触发，构建当前版本 $VERSION"
+          elif [ "$(git rev-list --count HEAD)" -lt 2 ]; then
+            echo "历史提交不足，跳过发版"
+          else
+            CHANGED=$(git diff --name-only HEAD~1 HEAD | sort | tr -d '\r')
+            PREVIOUS=""
+            if git cat-file -e "HEAD~1:bot/version.py" 2>/dev/null; then
+              PREVIOUS=$(git show HEAD~1:bot/version.py | python -c "import sys; g={}; exec(sys.stdin.read(), g); print(g.get('VERSION', ''))")
+            fi
+
+            echo "变更文件："
+            echo "$CHANGED"
+            echo "上一版本：${PREVIOUS:-无}  当前版本：$VERSION"
+
+            if [ -n "$VERSION" ] && [ "$VERSION" != "$PREVIOUS" ]; then
+              SHOULD_BUILD=true
+              SHOULD_RELEASE=true
+              echo "版本号变化，识别为发版提交"
+            else
+              echo "版本号未变化，跳过发版"
+            fi
+          fi
+
+          {
+            echo "should_build=$SHOULD_BUILD"
+            echo "should_release=$SHOULD_RELEASE"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: detect
+    if: needs.detect.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Read VERSION
-        id: version
-        run: |
-          VERSION=$(python -c "exec(open('bot/version.py', encoding='utf-8').read()); print(VERSION)")
-          if [ -z "$VERSION" ]; then
-            echo "无法从 bot/version.py 读取 VERSION" >&2
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "使用版本：$VERSION"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -58,10 +109,10 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
             ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=latest
+            type=raw,value=${{ needs.detect.outputs.version }}
           labels: |
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.version=${{ needs.detect.outputs.version }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -73,6 +124,19 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            APP_VERSION=${{ steps.version.outputs.version }}
+            APP_VERSION=${{ needs.detect.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Create GitHub release
+        if: needs.detect.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          git log -1 --pretty=%B > /tmp/release-notes.md
+          gh release create "v$VERSION" docker-compose.yml \
+            --target "${{ github.sha }}" \
+            --title "v$VERSION" \
+            --notes-file /tmp/release-notes.md
