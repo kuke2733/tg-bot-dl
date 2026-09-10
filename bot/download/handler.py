@@ -64,10 +64,8 @@ def take_pending_rename(chat_id: int | None) -> str | None:
 
 
 async def _status_message(
-    client,
-    chat_id: int,
+    target: Message,
     text: str,
-    reply_to_id: int,
     seed: Message | None = None,
 ) -> Message:
     if seed is not None:
@@ -76,12 +74,19 @@ async def _status_message(
             return seed
         except Exception:
             logging.debug("编辑状态消息失败，改为新发", exc_info=True)
-    return await client.send_message(
-        chat_id,
+    return await app.send_message(
+        target.chat.id,
         text,
         parse_mode=ParseMode.MARKDOWN,
-        reply_to_message_id=reply_to_id,
+        reply_to_message_id=target.id,
     )
+
+
+def _link_override(message: Message) -> str | None:
+    parts = (message.text or "").split()
+    if len(parts) < 3:
+        return None
+    return " ".join(parts[2:]).strip() or None
 
 
 async def apply_rename(download: Download, raw_name: str) -> str:
@@ -152,6 +157,8 @@ async def enqueue_file(
     target = reply_to or message
     if any(item.id == message.id or item.filename == rel for item in downloads):
         logging.debug("跳过重复任务：%s %s", message.id, rel)
+        if batch is None:
+            await _status_message(target, f"文件 `{rel}` 已在下载队列中。", progress_seed)
         return
 
     batch_item = None
@@ -164,7 +171,7 @@ async def enqueue_file(
         if batch_item is not None:
             batch_item.status = "done"
             return
-        await target.reply(text=f"文件 `{rel}` 已经存在。")
+        await _status_message(target, f"文件 `{rel}` 已经存在。", progress_seed)
         return
 
     size = media_file_size(message)
@@ -172,10 +179,8 @@ async def enqueue_file(
         size_text = f"（{humanReadableSize(size)}）" if size else ""
         logging.warning("收到文件，加入下载队列：%s %s", rel, size_text)
         progress = await _status_message(
-            client,
-            target.chat.id,
+            target,
             f"文件 `{rel}` 已加入下载队列{size_text}。",
-            target.id,
             progress_seed,
         )
     else:
@@ -207,6 +212,8 @@ async def enqueue_messages(
 ) -> None:
     messages = [message for message in messages if message and message.media]
     if not messages:
+        if notice is not None and reply_to is not None:
+            await _status_message(reply_to, "这条链接对应的消息里没有文件。", notice)
         return
     if not override:
         override = take_pending_rename(_chat_id(reply_to or messages[0]))
@@ -231,7 +238,7 @@ async def enqueue_messages(
         "回复本条消息可修改文件夹名称。"
     )
     target = reply_to or messages[0]
-    status = await _status_message(client, target.chat.id, summary, target.id, notice)
+    status = await _status_message(target, summary, notice)
 
     batch = Batch(
         id=str(getattr(messages[0], "media_group_id", messages[0].id)),
@@ -274,21 +281,45 @@ async def addFile(_, message: Message) -> None:
         raise
 
 
-async def addFileFromUser(fileMessage: Message, linkMessage: Message) -> None:
-    override = None
-    parts = (linkMessage.text or "").split()
-    if len(parts) >= 3:
-        override = " ".join(parts[2:]).strip() or None
-    messages = [fileMessage]
+async def addFromLink(link_message: Message, chat: int | str, message_id: int) -> None:
+    notice = await _status_message(link_message, "正在读取这条消息…")
     try:
-        grouped = await user.get_media_group(fileMessage.chat.id, fileMessage.id)
+        fetched = await user.get_messages(chat, [message_id])
+    except Exception:
+        logging.exception("通过用户账号读取消息失败 chat=%s message_id=%s", chat, message_id)
+        await _status_message(
+            link_message,
+            "用当前用户账号找不到这条消息。请确认这个账号已经加入对应频道或群组。",
+            notice,
+        )
+        return
+
+    file_message = fetched[0] if fetched else None
+    if not file_message or not file_message.media:
+        await _status_message(link_message, "这条链接对应的消息里没有文件。", notice)
+        return
+
+    messages = [file_message]
+    try:
+        grouped = await user.get_media_group(file_message.chat.id, file_message.id)
         if grouped:
-            messages = [item for item in grouped if item and item.media]
+            messages = [item for item in grouped if item and item.media] or messages
     except ValueError:
         pass
     except Exception:
         logging.warning("通过链接获取整组文件失败", exc_info=True)
-    await enqueue_messages(messages, user, reply_to=linkMessage, override=override)
+
+    try:
+        await enqueue_messages(
+            messages,
+            user,
+            reply_to=link_message,
+            override=_link_override(link_message),
+            notice=notice,
+        )
+    except Exception:
+        logging.exception("通过链接加入下载失败 chat=%s message_id=%s", chat, message_id)
+        await _status_message(link_message, "处理这条链接时出错了，请看日志。", notice)
 
 
 async def renameFromText(_, message: Message) -> None:

@@ -175,8 +175,8 @@ async def addByLink(_, message: Message):
     if not user:
         await message.reply("还没有配置用户账号，没法读取这类消息。")
         return
-    messageParts = (message.text or "").split()
-    if len(messageParts) < 2:
+    parts = (message.text or "").split()
+    if len(parts) < 2:
         await message.reply(
             "请发一条消息链接给我。\n"
             "示例：`/add https://t.me/c/1234567890/123`",
@@ -184,22 +184,12 @@ async def addByLink(_, message: Message):
         )
         return
 
-    parsed = parse_message_link(messageParts[1])
+    parsed = parse_message_link(parts[1])
     if not parsed:
         await message.reply(LINK_HELP, parse_mode=ParseMode.MARKDOWN)
         return
 
-    chat, message_id = parsed
-    try:
-        messages = await user.get_messages(chat, [message_id])
-    except Exception:
-        logging.exception("通过用户账号读取消息失败 chat=%s message_id=%s", chat, message_id)
-        await message.reply("用当前用户账号找不到这条消息。请确认这个账号已经加入对应频道或群组。")
-        return
-    if not messages or not messages[0] or not messages[0].media:
-        await message.reply("这条链接对应的消息里没有文件。")
-        return
-    await download_handler.addFileFromUser(messages[0], message)
+    await download_handler.addFromLink(message, *parsed)
 
 
 async def usage(_, message: Message):
