@@ -5,6 +5,10 @@ from dataclasses import dataclass, field
 from pyrogram.client import Client
 from pyrogram.types import Message
 
+UNFINISHED_STATUS = {"waiting", "downloading", "duplicate"}
+SUCCESS_STATUS = {"done", "content_duplicate"}
+FAILED_STATUS = {"failed", "stopped", "deleted"}
+
 
 @dataclass
 class BatchItem:
@@ -26,6 +30,7 @@ class Batch:
     last_update: float = 0.0
     stopped: bool = False
     items: list[BatchItem] = field(default_factory=list)
+    pending_unique: list[Download] = field(default_factory=list)
 
     def item_for(self, download_id: int) -> BatchItem | None:
         for item in self.items:
@@ -35,15 +40,19 @@ class Batch:
 
     @property
     def done(self) -> int:
-        return sum(item.status == "done" for item in self.items)
+        return sum(item.status in SUCCESS_STATUS for item in self.items)
 
     @property
     def failed(self) -> int:
-        return sum(item.status in {"failed", "stopped"} for item in self.items)
+        return sum(item.status in FAILED_STATUS for item in self.items)
+
+    @property
+    def skipped(self) -> int:
+        return sum(item.status == "skipped" for item in self.items)
 
     @property
     def finished(self) -> int:
-        return self.done + self.failed
+        return sum(item.status not in UNFINISHED_STATUS for item in self.items)
 
 
 @dataclass
@@ -62,3 +71,5 @@ class Download:
     pending_rename: str | None = None
     stopped: bool = False
     ui_seq: int = 0
+    unique_id: str = ""
+    skip_hash_check: bool = False

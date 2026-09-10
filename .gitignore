@@ -6,6 +6,7 @@ config/settings.env
 config/web.secret
 config/*.session
 config/*.session-journal
+config/*.sqlite
 
 data/*
 !data/.gitkeep

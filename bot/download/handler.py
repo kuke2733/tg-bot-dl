@@ -5,24 +5,31 @@ import os
 import time
 
 from pyrogram.enums.parse_mode import ParseMode
-from pyrogram.types import Message
+from pyrogram.types import InlineKeyboardMarkup, Message
 
 from bot import folder
 from bot.app import app, user
 from bot.download.groups import MediaGroupCollector
 from bot.download.manager import (
+    UNIQUE_DUP_TEXT,
     active_batches,
     downloads,
     find_rename_target,
+    is_unique_duplicate,
+    mark_batch_unique_duplicate,
+    queue_download,
     refresh_batch,
     register_rename_target,
+    register_unique_prompt,
     rename_targets,
     safe_edit,
+    unique_duplicate_keyboard,
 )
 from bot.download.names import (
     album_folder_name,
     extract_rename_name,
     media_file_size,
+    media_file_unique_id,
     relative_name,
     replace_filename,
     resolve_filename,
@@ -67,10 +74,11 @@ async def _status_message(
     target: Message,
     text: str,
     seed: Message | None = None,
+    reply_markup: InlineKeyboardMarkup | None = None,
 ) -> Message:
     if seed is not None:
         try:
-            await seed.edit(text, parse_mode=ParseMode.MARKDOWN)
+            await seed.edit(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
             return seed
         except Exception:
             logging.debug("编辑状态消息失败，改为新发", exc_info=True)
@@ -79,6 +87,7 @@ async def _status_message(
         text,
         parse_mode=ParseMode.MARKDOWN,
         reply_to_message_id=target.id,
+        reply_markup=reply_markup,
     )
 
 
@@ -118,6 +127,12 @@ async def apply_rename(download: Download, raw_name: str) -> str:
     return download.filename
 
 
+def _move_download_into_folder(download: Download, folder_name: str) -> None:
+    download.filename = f"{folder_name}/{os.path.basename(download.filename)}"
+    if download.batch_item:
+        download.batch_item.name = os.path.basename(download.filename)
+
+
 async def rename_batch_folder(batch: Batch, raw_name: str) -> str:
     folder_name = sanitize_folder_name(raw_name)
     if not folder_name:
@@ -127,12 +142,36 @@ async def rename_batch_folder(batch: Batch, raw_name: str) -> str:
     batch.directory = os.path.join(folder.get(), new_folder)
     for queued in list(rename_targets.values()):
         if queued.batch is batch and not queued.started:
-            queued.filename = f"{new_folder}/{os.path.basename(queued.filename)}"
-            if queued.batch_item:
-                queued.batch_item.name = os.path.basename(queued.filename)
+            _move_download_into_folder(queued, new_folder)
             register_rename_target(queued)
+    for pending in list(batch.pending_unique):
+        _move_download_into_folder(pending, new_folder)
     await refresh_batch(batch, force=True)
     return new_folder
+
+
+def _make_download(
+    message: Message,
+    client,
+    rel: str,
+    progress: Message,
+    size: int,
+    unique_id: str,
+    batch: Batch | None,
+    batch_item: BatchItem | None,
+) -> Download:
+    return Download(
+        client=client,
+        id=message.id,
+        filename=rel,
+        from_message=message,
+        progress_message=progress,
+        expected_size=size,
+        size=size,
+        batch=batch,
+        batch_item=batch_item,
+        unique_id=unique_id,
+    )
 
 
 async def enqueue_file(
@@ -161,10 +200,31 @@ async def enqueue_file(
             await _status_message(target, f"文件 `{rel}` 已在下载队列中。", progress_seed)
         return
 
+    size = media_file_size(message)
+    unique_id = media_file_unique_id(message)
     batch_item = None
     if batch is not None:
         batch_item = BatchItem(download_id=message.id, name=filename, status="waiting")
         batch.items.append(batch_item)
+
+    if is_unique_duplicate(unique_id):
+        logging.warning("下载前命中重复：%s unique_id=%s", rel, unique_id)
+        if batch is not None:
+            download = _make_download(
+                message, client, rel, batch.message, size, unique_id, batch, batch_item
+            )
+            mark_batch_unique_duplicate(download)
+            return
+        download = _make_download(message, client, rel, target, size, unique_id, None, None)
+        token = register_unique_prompt(download)
+        progress = await _status_message(
+            target,
+            UNIQUE_DUP_TEXT,
+            progress_seed,
+            reply_markup=unique_duplicate_keyboard(token),
+        )
+        download.progress_message = progress
+        return
 
     if os.path.isfile(real_file):
         logging.debug("本地已存在：%s", real_file)
@@ -174,33 +234,21 @@ async def enqueue_file(
         await _status_message(target, f"文件 `{rel}` 已经存在。", progress_seed)
         return
 
-    size = media_file_size(message)
     if batch is None:
         size_text = f"（{humanReadableSize(size)}）" if size else ""
-        logging.warning("收到文件，加入下载队列：%s %s", rel, size_text)
+        logging.warning("收到文件，加入下载队列：%s %s unique_id=%s", rel, size_text, unique_id or "-")
         progress = await _status_message(
             target,
             f"文件 `{rel}` 已加入下载队列{size_text}。",
             progress_seed,
         )
     else:
-        logging.warning("收到文件，加入下载队列：%s", rel)
+        logging.warning("收到文件，加入下载队列：%s unique_id=%s", rel, unique_id or "-")
         progress = batch.message
 
-    downloads.append(
-        Download(
-            client=client,
-            id=message.id,
-            filename=rel,
-            from_message=message,
-            progress_message=progress,
-            expected_size=size,
-            size=size,
-            batch=batch,
-            batch_item=batch_item,
-        )
+    queue_download(
+        _make_download(message, client, rel, progress, size, unique_id, batch, batch_item)
     )
-    register_rename_target(downloads[-1])
 
 
 async def enqueue_messages(

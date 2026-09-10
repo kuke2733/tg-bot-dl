@@ -27,6 +27,11 @@ MIME_EXTENSIONS = {
     "audio/mp4": ".m4a",
     "audio/ogg": ".ogg",
     "audio/opus": ".ogg",
+    "audio/flac": ".flac",
+    "audio/x-flac": ".flac",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/aac": ".aac",
     "application/pdf": ".pdf",
     "application/zip": ".zip",
     "application/x-tgsticker": ".tgs",
@@ -57,7 +62,15 @@ KIND_PREFIX = {
 }
 
 GENERIC_NAME = re.compile(r"^File-\d+$", re.I)
-INVALID_FOLDER_CHARS = re.compile(r'[<>:"/\\|?*\n\r]+')
+INVALID_NAME_CHARS = re.compile(r'[<>:"/\\|?*\n\r]+')
+METADATA_LINE = re.compile(
+    r"(?i)^(artist|album|title|duration|size|type|genre|year|track|performer|date)\s*[:：]"
+)
+RESERVED_FILENAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
 RENAME_PREFIXES = ("重命名:", "重命名：","重命名 ", "rename:", "name:")
 KNOWN_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic",
@@ -84,6 +97,11 @@ def media_file_size(message: Message) -> int:
         return 0
 
 
+def media_file_unique_id(message: Message) -> str:
+    media, _ = message_media(message)
+    return str(getattr(media, "file_unique_id", "") or "")
+
+
 def relative_name(filename: str) -> str:
     path = folder.getPath().replace("\\", "/").strip("/")
     if not path or path == ".":
@@ -93,6 +111,45 @@ def relative_name(filename: str) -> str:
 
 def has_extension(filename: str) -> bool:
     return len(os.path.splitext(filename)[1]) > 1
+
+
+def _collapse_name(name: str) -> str:
+    name = INVALID_NAME_CHARS.sub("_", name)
+    name = re.sub(r"\s*_\s*", "_", name)
+    name = re.sub(r"_+", "_", name)
+    return name.strip(" ._")
+
+
+def sanitize_filename(name: str) -> str:
+    name = _collapse_name(os.path.basename((name or "").strip()))
+    if not name:
+        return ""
+    stem, ext = os.path.splitext(name)
+    if not stem:
+        return ""
+    if stem.upper() in RESERVED_FILENAMES:
+        stem += "_"
+    return f"{stem}{ext}"[:180]
+
+
+def caption_is_metadata(text: str | None) -> bool:
+    if not text:
+        return False
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+    hits = sum(1 for line in lines if METADATA_LINE.match(line))
+    return hits >= 2
+
+
+def audio_display_name(media, ext: str) -> str | None:
+    title = os.path.splitext(sanitize_filename(str(getattr(media, "title", "") or "")))[0]
+    performer = os.path.splitext(sanitize_filename(str(getattr(media, "performer", "") or "")))[0]
+    if performer and title:
+        return sanitize_filename(f"{performer} - {title}{ext}")
+    if title:
+        return sanitize_filename(f"{title}{ext}")
+    return None
 
 
 def extension_for(media, kind: str) -> str:
@@ -151,6 +208,8 @@ def looks_like_rename_name(text: str) -> bool:
         return False
     if re.search(r"[。！？!?；;]", value):
         return False
+    if METADATA_LINE.match(value) or INVALID_NAME_CHARS.search(value):
+        return False
     if looks_like_filename(value):
         return True
     name = os.path.basename(value)
@@ -172,9 +231,11 @@ def extract_rename_name(text: str | None) -> str | None:
         return None
     forced = strip_rename_prefix(first)
     if forced is not None:
-        return os.path.basename(forced) or None
+        return sanitize_filename(os.path.basename(forced)) or None
+    if caption_is_metadata(text):
+        return None
     if looks_like_rename_name(first):
-        return os.path.basename(first)
+        return sanitize_filename(os.path.basename(first)) or None
     return None
 
 
@@ -187,7 +248,7 @@ def usable_file_name(name: str | None) -> str | None:
     stem, ext = os.path.splitext(name)
     if GENERIC_NAME.match(stem) and len(ext) <= 1:
         return None
-    return name
+    return sanitize_filename(name) or None
 
 
 def resolve_filename(
@@ -202,26 +263,28 @@ def resolve_filename(
         filename = os.path.basename(filename)
     if not filename and use_caption_name:
         filename = extract_rename_name(message.caption)
-        if filename:
-            filename = os.path.basename(filename)
     if not filename and media:
         filename = usable_file_name(getattr(media, "file_name", None))
+    if not filename and media and kind == "audio":
+        filename = audio_display_name(media, ext)
     if not filename:
         filename = default_filename(kind, ext)
-    elif not has_extension(filename) and ext:
-        filename = f"{filename}{ext}"
+    filename = sanitize_filename(filename) or default_filename(kind, ext)
+    if not has_extension(filename) and ext:
+        filename = sanitize_filename(f"{os.path.splitext(filename)[0]}{ext}") or default_filename(kind, ext)
     return filename
 
 
 def sanitize_folder_name(name: str) -> str:
-    cleaned = INVALID_FOLDER_CHARS.sub("_", name).strip(" .")
-    return cleaned[:80]
+    return _collapse_name(name)[:80]
 
 
 def album_folder_name(messages: list[Message]) -> str:
     for message in messages:
-        text = extract_rename_name(message.caption) or (message.caption or "").strip()
-        text = sanitize_folder_name(text)
+        text = extract_rename_name(message.caption)
+        if not text and not caption_is_metadata(message.caption):
+            text = (message.caption or "").strip()
+        text = sanitize_folder_name(text or "")
         if text:
             return text
     return datetime.now().strftime("相册_%Y-%m-%d_%H-%M-%S")
@@ -238,7 +301,7 @@ def unique_folder(name: str) -> str:
 
 
 def unique_filename(filename: str, directory: str, used: set[str]) -> str:
-    filename = os.path.basename(filename)
+    filename = sanitize_filename(os.path.basename(filename)) or "file"
     stem, ext = os.path.splitext(filename)
     candidate = filename
     index = 2
@@ -250,14 +313,14 @@ def unique_filename(filename: str, directory: str, used: set[str]) -> str:
 
 
 def with_media_extension(name: str, message: Message) -> str:
-    filename = os.path.basename((name or "").strip())
+    filename = sanitize_filename(os.path.basename((name or "").strip()))
     if not filename:
         return filename
     if has_extension(filename):
         return filename
     media, kind = message_media(message)
     ext = extension_for(media, kind)
-    return f"{filename}{ext}" if ext else filename
+    return sanitize_filename(f"{filename}{ext}") if ext else filename
 
 
 def replace_filename(path: str, filename: str) -> str:

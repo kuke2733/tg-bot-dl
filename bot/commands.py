@@ -99,7 +99,7 @@ def register(app: Client):
     app.add_handler(
         MessageHandler(checkAdmins(download_handler.renameFromText), text)
     )
-    app.add_handler(CallbackQueryHandler(download_manager.stopDownload))
+    app.add_handler(CallbackQueryHandler(download_manager.handle_callback))
 
 
 UNAVAILABLE_HINTS = (

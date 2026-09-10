@@ -2,16 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
+from dataclasses import dataclass
 from pathlib import Path
 from textwrap import dedent
 from time import time
 
 from pyrogram.client import Client
 from pyrogram.enums import ParseMode
-from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.app import BASE_FOLDER, MAX_SIMULTANEOUS_TRANSMISSIONS
 from bot.download.fileformat import align_filename_to_container
+from bot.download.names import replace_filename, unique_filename, with_media_extension
+from bot.download.store import (
+    delete_by_unique_id,
+    find_by_sha256,
+    find_by_unique_id,
+    hash_file,
+    init as init_store,
+    remember,
+)
 from bot.download.transfer import download_with_resume
 from bot.download.types import Batch, BatchItem, Download
 from bot.util import humanReadableSize, humanReadableTime
@@ -24,10 +35,26 @@ active_batches: dict[str, Batch] = {}
 # 进度消息 / 原消息 id -> 仍可改名的下载任务
 rename_targets: dict[int, Download] = {}
 
+
+@dataclass
+class HashPrompt:
+    download: Download
+    path: str
+    sha256: str
+    success_text: str
+    prompt_message: Message
+
+
+in_flight_unique_ids: set[str] = set()
+pending_unique: dict[str, Download] = {}
+pending_hash: dict[str, HashPrompt] = {}
+
 BATCH_CLEANUP_TIMEOUT = 15.0
 FILE_HANDLE_RELEASE_WAIT = 1.5
 BATCH_CLEANUP_CHECK_INTERVAL = 0.3
 STOPPED_TEXT = "已停止并删除"
+UNIQUE_DUP_TEXT = "这个文件下载过，取消还是继续？"
+HASH_DUP_TEXT = "和历史下载的文件内容相同，保留还是删除？"
 
 STATUS_MARK = {
     "done": "✅",
@@ -36,6 +63,9 @@ STATUS_MARK = {
     "failed": "❌",
     "stopped": "⏹",
     "deleted": "🗑️",
+    "duplicate": "⚠️",
+    "skipped": "⏭",
+    "content_duplicate": "⚠️",
 }
 
 ITEM_STATUS_LABEL = {
@@ -44,6 +74,9 @@ ITEM_STATUS_LABEL = {
     "stopped": "已停止",
     "deleted": "已删除",
     "failed": "失败",
+    "duplicate": "重复",
+    "skipped": "已跳过",
+    "content_duplicate": "内容重复",
 }
 
 
@@ -66,8 +99,95 @@ def find_rename_target(message_id: int) -> Download | None:
     return rename_targets.get(message_id)
 
 
+def new_token() -> str:
+    return secrets.token_hex(4)
+
+
+def is_unique_duplicate(unique_id: str) -> bool:
+    if not unique_id:
+        return False
+    if unique_id in in_flight_unique_ids:
+        return True
+    return find_by_unique_id(unique_id) is not None
+
+
+def track_unique(unique_id: str) -> None:
+    if unique_id:
+        in_flight_unique_ids.add(unique_id)
+
+
+def untrack_unique(unique_id: str) -> None:
+    if not unique_id:
+        return
+    still = any(
+        item.unique_id == unique_id and not item.stopped
+        for item in list(downloads)
+    ) or any(
+        item.unique_id == unique_id and not item.stopped
+        for item in list(rename_targets.values())
+    )
+    if not still:
+        in_flight_unique_ids.discard(unique_id)
+
+
+def queue_download(download: Download) -> None:
+    track_unique(download.unique_id)
+    downloads.append(download)
+    register_rename_target(download)
+
+
+def register_unique_prompt(download: Download) -> str:
+    token = new_token()
+    pending_unique[token] = download
+    return token
+
+
+def unique_duplicate_keyboard(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("取消下载", callback_data=f"dupx {token}"),
+                InlineKeyboardButton("继续下载", callback_data=f"dupc {token}"),
+            ]
+        ]
+    )
+
+
+def hash_duplicate_keyboard(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("保留", callback_data=f"hkeep {token}"),
+                InlineKeyboardButton("删除", callback_data=f"hdel {token}"),
+            ]
+        ]
+    )
+
+
+def mark_batch_unique_duplicate(download: Download) -> None:
+    if download.batch_item:
+        download.batch_item.status = "duplicate"
+    if download.batch is not None:
+        download.batch.pending_unique.append(download)
+
+
+def ensure_unique_download_name(download: Download) -> None:
+    rel = download.filename.replace("\\", "/")
+    abs_path = Path(BASE_FOLDER) / rel
+    used: set[str] = set()
+    if download.batch:
+        for sibling in download.batch.items:
+            if sibling.download_id != download.id:
+                used.add(sibling.name.lower())
+    name = unique_filename(abs_path.name, str(abs_path.parent), used)
+    download.filename = replace_filename(rel, name)
+    if download.batch_item:
+        download.batch_item.name = name
+
+
 async def run() -> None:
     global running
+    init_store()
     while True:
         for download in list(downloads):
             if running == MAX_SIMULTANEOUS_TRANSMISSIONS:
@@ -91,10 +211,21 @@ async def safe_edit(message, text: str, **kwargs) -> None:
         logging.debug("更新下载消息失败：%s: %s", type(exc).__name__, exc)
 
 
-def batch_keyboard(batch: Batch) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("停止全部", callback_data=f"stopb {batch.id}")]]
-    )
+def batch_keyboard(batch: Batch) -> InlineKeyboardMarkup | None:
+    rows: list[list[InlineKeyboardButton]] = []
+    if batch.pending_unique and not batch.stopped:
+        rows.append(
+            [
+                InlineKeyboardButton("跳过重复", callback_data=f"bdupx {batch.id}"),
+                InlineKeyboardButton("仍要下载", callback_data=f"bdupc {batch.id}"),
+            ]
+        )
+    has_downloads = any(item.status in {"waiting", "downloading"} for item in batch.items)
+    if has_downloads and not batch.stopped:
+        rows.append([InlineKeyboardButton("停止全部", callback_data=f"stopb {batch.id}")])
+    if not rows:
+        return None
+    return InlineKeyboardMarkup(rows)
 
 
 def stop_keyboard(download_id: int) -> InlineKeyboardMarkup:
@@ -154,13 +285,19 @@ def render_item(item: BatchItem) -> str:
 def render_batch(batch: Batch) -> str:
     total = len(batch.items) or batch.total
     if batch.finished >= total:
-        status = (
-            f"全部完成 {batch.done}/{total}"
-            if batch.failed == 0
-            else f"完成 {batch.done}/{total}，未完成 {batch.failed}"
-        )
+        parts = [f"完成 {batch.done}/{total}"]
+        if batch.skipped:
+            parts.append(f"跳过 {batch.skipped}")
+        if batch.failed:
+            parts.append(f"未完成 {batch.failed}")
+        if batch.failed == 0 and batch.skipped == 0:
+            status = f"全部完成 {batch.done}/{total}"
+        else:
+            status = "，".join(parts)
     else:
         status = f"进度 {batch.done}/{total}"
+        if batch.skipped:
+            status += f"，跳过 {batch.skipped}"
     body = "\n".join(render_item(item) for item in batch.items)
     return f"文件夹 `{batch.folder}`\n{status}\n\n{body}"
 
@@ -327,6 +464,50 @@ async def start_download_progress(download: Download, item: BatchItem | None) ->
     )
 
 
+def success_text_for(download: Download, actual_size: int, time_took: str, speed: str) -> str:
+    return dedent(
+        f"""
+        文件 `{download.filename}` 已下载完成。
+        共 {humanReadableSize(actual_size)}，用时 {time_took}，平均速度 __{speed}/s__
+        """
+    )
+
+
+async def prompt_hash_duplicate(
+    download: Download,
+    path: str,
+    sha256: str,
+    success_text: str,
+) -> None:
+    token = new_token()
+    item = resolve_batch_item(download)
+    if download.batch:
+        if item:
+            item.status = "content_duplicate"
+            item.name = Path(download.filename).name
+        await finish_batch_item(download.batch)
+        prompt_message = await download.batch.message.reply(
+            f"`{Path(download.filename).name}`\n{HASH_DUP_TEXT}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=hash_duplicate_keyboard(token),
+        )
+    else:
+        prompt_message = download.progress_message
+        await safe_edit(
+            prompt_message,
+            HASH_DUP_TEXT,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=hash_duplicate_keyboard(token),
+        )
+    pending_hash[token] = HashPrompt(
+        download=download,
+        path=path,
+        sha256=sha256,
+        success_text=success_text,
+        prompt_message=prompt_message,
+    )
+
+
 async def finish_download_success(download: Download, item: BatchItem | None, result: str) -> None:
     result, download.filename = align_filename_to_container(result, download.filename)
     if download.pending_rename:
@@ -338,6 +519,20 @@ async def finish_download_success(download: Download, item: BatchItem | None, re
     )
     speed = humanReadableSize(actual_size / seconds_took)
     time_took = humanReadableTime(int(seconds_took))
+    success_text = success_text_for(download, actual_size, time_took, speed)
+
+    sha256 = ""
+    try:
+        sha256 = await asyncio.to_thread(hash_file, result)
+    except OSError:
+        logging.exception("计算文件哈希失败：%s", result)
+
+    if sha256 and not download.skip_hash_check and find_by_sha256(sha256):
+        logging.warning("下载后内容重复：%s sha256=%s", download.filename, sha256[:12])
+        await prompt_hash_duplicate(download, result, sha256, success_text)
+        return
+
+    remember(download.unique_id, sha256, actual_size, download.filename)
 
     if download.batch:
         if item:
@@ -346,26 +541,16 @@ async def finish_download_success(download: Download, item: BatchItem | None, re
             item.received = actual_size
             item.total = actual_size
         await finish_batch_item(download.batch)
-    else:
-        await safe_edit(
-            download.progress_message,
-            dedent(
-                f"""
-                文件 `{download.filename}` 已下载完成。
-                共 {humanReadableSize(actual_size)}，用时 {time_took}，平均速度 __{speed}/s__
-                """
-            ),
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        return
+
+    await safe_edit(
+        download.progress_message,
+        success_text,
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
 def apply_pending_rename_on_disk(download: Download, result_path: str) -> tuple[str, str]:
-    from bot.download.names import (
-        replace_filename,
-        unique_filename,
-        with_media_extension,
-    )
-
     raw = (download.pending_rename or "").strip()
     download.pending_rename = None
     if not raw:
@@ -460,6 +645,7 @@ async def downloadFile(download: Download) -> None:
         await handle_download_failure(download, item)
     finally:
         unregister_rename_target(download)
+        untrack_unique(download.unique_id)
         running -= 1
 
 
@@ -539,40 +725,136 @@ def createProgress(client: Client):
     return progress
 
 
-async def stopDownload(_, callback: CallbackQuery) -> None:
-    data = callback.data or ""
+async def continue_unique_download(download: Download) -> None:
+    if download.unique_id:
+        delete_by_unique_id(download.unique_id)
+    download.skip_hash_check = True
+    ensure_unique_download_name(download)
+    if download.batch_item:
+        download.batch_item.status = "waiting"
+    queue_download(download)
+    if download.batch:
+        return
+    size = download.expected_size or download.size
+    size_text = f"（{humanReadableSize(size)}）" if size else ""
+    await safe_edit(
+        download.progress_message,
+        f"文件 `{download.filename}` 已加入下载队列{size_text}。",
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
-    if data.startswith("stopb "):
-        batch_id = data.split(" ", 1)[1]
-        target = active_batches.get(batch_id)
-        if target is None:
-            await callback.answer("该批次已完成或不存在")
-            return
 
-        target.stopped = True
-        for item in list(downloads):
-            if item.batch and item.batch.id == batch_id:
-                mark_download_stopped(item)
-        for item in list(rename_targets.values()):
-            if item.batch and item.batch.id == batch_id:
-                mark_download_stopped(item)
-        for batch_item in target.items:
-            if batch_item.status in {"waiting", "downloading"}:
-                batch_item.status = "stopped"
+async def skip_unique_download(download: Download) -> None:
+    if download.batch_item:
+        download.batch_item.status = "skipped"
+    if download.batch is None:
+        await safe_edit(
+            download.progress_message,
+            "已取消下载",
+            parse_mode=ParseMode.MARKDOWN,
+        )
 
-        await callback.answer("正在停止...")
-        if not await wait_for_batch_cleanup(batch_id):
-            logging.warning("批次 %s 等待超时，强制清理", batch_id)
 
-        deleted, remaining = cleanup_batch_files(target)
-        logging.warning("批次 %s 清理完成：删除 %d 个文件，剩余 %d 个", batch_id, deleted, remaining)
-        for batch_item in target.items:
-            batch_item.status = "deleted"
-        await safe_edit(target.message, STOPPED_TEXT, parse_mode=ParseMode.MARKDOWN)
-        active_batches.pop(batch_id, None)
+async def handle_unique_decision(callback: CallbackQuery, continue_download: bool) -> None:
+    token = (callback.data or "").split(" ", 1)[-1]
+    download = pending_unique.pop(token, None)
+    if download is None:
+        await callback.answer("已处理")
+        return
+    if continue_download:
+        await callback.answer("继续下载")
+        await continue_unique_download(download)
+        return
+    await callback.answer("已取消")
+    await skip_unique_download(download)
+
+
+async def handle_batch_unique_decision(callback: CallbackQuery, continue_download: bool) -> None:
+    batch_id = (callback.data or "").split(" ", 1)[-1]
+    batch = active_batches.get(batch_id)
+    if batch is None:
+        await callback.answer("该批次已完成或不存在")
+        return
+    pending = list(batch.pending_unique)
+    batch.pending_unique.clear()
+    if not pending:
+        await callback.answer("没有待处理的重复文件")
+        await refresh_batch(batch, force=True)
+        return
+    if continue_download:
+        await callback.answer("继续下载重复文件")
+        for download in pending:
+            await continue_unique_download(download)
+    else:
+        await callback.answer("已跳过重复文件")
+        for download in pending:
+            await skip_unique_download(download)
+        await finish_batch_item(batch)
+        return
+    await refresh_batch(batch, force=True)
+
+
+async def handle_hash_decision(callback: CallbackQuery, keep: bool) -> None:
+    token = (callback.data or "").split(" ", 1)[-1]
+    prompt = pending_hash.pop(token, None)
+    if prompt is None:
+        await callback.answer("已处理")
+        return
+    download = prompt.download
+    item = resolve_batch_item(download)
+    name = Path(download.filename).name
+    if keep:
+        await callback.answer("已保留")
+        if item:
+            item.status = "done"
+            item.name = name
+        text = prompt.success_text if download.batch is None else f"`{name}` 已保留"
+    else:
+        await callback.answer("已删除")
+        try:
+            Path(prompt.path).unlink(missing_ok=True)
+        except OSError:
+            logging.warning("删除重复文件失败：%s", prompt.path, exc_info=True)
+        if item:
+            item.status = "deleted"
+            item.name = name
+        text = "已删除重复文件" if download.batch is None else f"`{name}` 已删除"
+    if download.batch:
+        await refresh_batch(download.batch, force=True)
+    await safe_edit(prompt.prompt_message, text, parse_mode=ParseMode.MARKDOWN)
+
+
+async def handle_stop_batch(callback: CallbackQuery, batch_id: str) -> None:
+    target = active_batches.get(batch_id)
+    if target is None:
+        await callback.answer("该批次已完成或不存在")
         return
 
-    download_id = int(data.split()[-1])
+    target.stopped = True
+    target.pending_unique.clear()
+    for item in list(downloads):
+        if item.batch and item.batch.id == batch_id:
+            mark_download_stopped(item)
+    for item in list(rename_targets.values()):
+        if item.batch and item.batch.id == batch_id:
+            mark_download_stopped(item)
+    for batch_item in target.items:
+        if batch_item.status in {"waiting", "downloading"}:
+            batch_item.status = "stopped"
+
+    await callback.answer("正在停止...")
+    if not await wait_for_batch_cleanup(batch_id):
+        logging.warning("批次 %s 等待超时，强制清理", batch_id)
+
+    deleted, remaining = cleanup_batch_files(target)
+    logging.warning("批次 %s 清理完成：删除 %d 个文件，剩余 %d 个", batch_id, deleted, remaining)
+    for batch_item in target.items:
+        batch_item.status = "deleted"
+    await safe_edit(target.message, STOPPED_TEXT, parse_mode=ParseMode.MARKDOWN)
+    active_batches.pop(batch_id, None)
+
+
+async def handle_stop_single(callback: CallbackQuery, download_id: int) -> None:
     target = find_download_by_id(download_id)
     if target is None:
         await callback.answer("任务已结束")
@@ -582,3 +864,34 @@ async def stopDownload(_, callback: CallbackQuery) -> None:
         return
     mark_download_stopped(target)
     await callback.answer("正在停止...")
+
+
+async def handle_callback(_, callback: CallbackQuery) -> None:
+    data = callback.data or ""
+    if data.startswith("stopb "):
+        await handle_stop_batch(callback, data.split(" ", 1)[1])
+        return
+    if data.startswith("stop "):
+        await handle_stop_single(callback, int(data.split()[-1]))
+        return
+    if data.startswith("dupc "):
+        await handle_unique_decision(callback, True)
+        return
+    if data.startswith("dupx "):
+        await handle_unique_decision(callback, False)
+        return
+    if data.startswith("bdupc "):
+        await handle_batch_unique_decision(callback, True)
+        return
+    if data.startswith("bdupx "):
+        await handle_batch_unique_decision(callback, False)
+        return
+    if data.startswith("hkeep "):
+        await handle_hash_decision(callback, True)
+        return
+    if data.startswith("hdel "):
+        await handle_hash_decision(callback, False)
+        return
+    await callback.answer()
+
+

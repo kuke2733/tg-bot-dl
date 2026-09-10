@@ -202,8 +202,6 @@ async def download_with_resume(
     else:
         raise RuntimeError(f"下载未完成：{save_path}")
 
-    final_path = os.path.splitext(temp_path)[0]
-    if os.path.isfile(final_path):
-        os.remove(final_path)
-    os.replace(temp_path, final_path)
-    return final_path, message
+    Path(save_path).unlink(missing_ok=True)
+    os.replace(temp_path, save_path)
+    return save_path, message

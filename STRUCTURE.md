@@ -37,6 +37,7 @@ tg-bot-dl/
 │       ├── fileformat.py    按文件真实格式校正后缀
 │       ├── transfer.py      可续传分片下载（进程内失败重试）
 │       ├── manager.py       真正执行下载、更新进度、停止下载
+│       ├── store.py         用 SQLite 记录已下载文件，避免重复下载
 │       └── types.py         下载任务和分组任务的数据结构
 │
 ├── config/                  运行时配置和登录状态（不要提交到公开仓库）
@@ -122,6 +123,7 @@ python start.py
 | `fileformat.py` | 下载完成后按文件真实格式校正后缀，不改文件内容。 |
 | `transfer.py` | 可续传下载：按 1MB 分片拉取，失败保留 `.temp` 并从偏移重试。 |
 | `manager.py` | 从队列取出任务，执行下载，更新进度，处理「停止」。一组文件共用一条进度消息。 |
+| `store.py` | 本地 SQLite 记录 file_unique_id 和文件哈希，下载前/后拦截重复。 |
 | `types.py` | 单个下载任务，以及一组文件的共享状态。 |
 
 下载走的是 `bot/app.py` 里创建的同一个 Telegram 连接，因此配置了代理时，下载也会走代理。
@@ -141,6 +143,7 @@ python start.py
 | `config/web.secret` | 面板会话密钥 | 删除后已登录的面板会失效，会自动再生成 |
 | `config/TDownloader-bot.session` | 机器人登录状态 | 删除后机器人要重新登录 |
 | `config/TDownloader-user.session` | 用户账号登录状态 | 删除后要重新收验证码 |
+| `config/downloads.sqlite` | 已下载文件的查重记录 | 删除后无法拦截历史重复文件 |
 | `data/` | 下载完成的文件 | 删除只影响已下载文件 |
 
 ## 修改时看哪里
