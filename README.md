@@ -69,35 +69,42 @@ python start.py
 
 ### Docker
 
+推荐直接用已发布镜像，新建一个目录后放入 `docker-compose.yml`：
+
+```yaml
+services:
+  tg-bot-dl:
+    image: guyongbo/tg-bot-dl:latest
+    container_name: tg-bot-dl
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+      - ./config:/config
+    environment:
+      TZ: Asia/Shanghai
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
+
+然后启动：
+
+```bash
+docker compose up -d
+```
+
+浏览器打开 http://127.0.0.1:8080 填写 API ID、API Hash、Bot Token 和管理员。下载文件保存在 `./data`，登录会话和面板配置保存在 `./config`。
+
+容器里代理若填 `127.0.0.1`，会自动改写为宿主机地址 `host.docker.internal`。
+
+本仓库已带同一份 `docker-compose.yml`。克隆源码后也可以本地构建：
+
 ```bash
 docker compose up -d --build
 ```
 
-浏览器同样打开 http://127.0.0.1:8080 。下载目录挂载到 `./data`，配置与 session 挂载到 `./config`。
-
-只用镜像构建也可以：
-
-```bash
-docker build -t tg-bot-dl .
-docker run -d --name tg-bot-dl \
-  -p 8080:8080 \
-  -v "$(pwd)/data:/data" \
-  -v "$(pwd)/config:/config" \
-  --add-host=host.docker.internal:host-gateway \
-  tg-bot-dl
-```
-
-容器内代理若填 `127.0.0.1`，会自动改写为宿主机地址 `host.docker.internal`。
-
-推送到 `main`/`master` 或打 `v*` 标签后，GitHub Actions 会同时发布到 Docker Hub 与 GHCR（需先在仓库 Secrets 配置 `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`）。拉取示例：
-
-```bash
-# Docker Hub
-docker pull guyongbo/tg-bot-dl:latest
-
-# GitHub Container Registry
-docker pull ghcr.io/kuke2733/tg-bot-dl:latest
-```
+也可以改用 GitHub Container Registry 镜像：`ghcr.io/kuke2733/tg-bot-dl:latest`。
 
 
 ---

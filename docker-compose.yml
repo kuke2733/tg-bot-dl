@@ -1,9 +1,6 @@
 services:
   tg-bot-dl:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: tg-bot-dl:latest
+    image: guyongbo/tg-bot-dl:latest
     container_name: tg-bot-dl
     restart: unless-stopped
     ports:
@@ -12,11 +9,6 @@ services:
       - ./data:/data
       - ./config:/config
     environment:
-      IN_DOCKER: "1"
-      DOWNLOAD_FOLDER: /data
-      CONFIG_FOLDER: /config
-      WEB_HOST: 0.0.0.0
-      WEB_PORT: "8080"
-    # 容器里填 127.0.0.1 代理时，会自动改写为 host.docker.internal
+      TZ: Asia/Shanghai
     extra_hosts:
       - "host.docker.internal:host-gateway"

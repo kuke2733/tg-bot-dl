@@ -28,10 +28,8 @@ jobs:
             echo "无法从 bot/version.py 读取 VERSION" >&2
             exit 1
           fi
-          MAJOR_MINOR=$(echo "$VERSION" | cut -d. -f1-2)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "major_minor=$MAJOR_MINOR" >> "$GITHUB_OUTPUT"
-          echo "使用版本：$VERSION（$MAJOR_MINOR）"
+          echo "使用版本：$VERSION"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -62,7 +60,6 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=${{ steps.version.outputs.version }}
-            type=raw,value=${{ steps.version.outputs.major_minor }}
           labels: |
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
 
