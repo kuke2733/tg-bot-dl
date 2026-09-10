@@ -100,6 +100,33 @@
       -webkit-text-fill-color: transparent;
       background-clip: text;
     }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+    .version {
+      flex: none;
+      padding: 2px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .update-chip {
+      flex: none;
+      padding: 2px 8px;
+      border: 1px solid rgba(245, 158, 11, 0.45);
+      border-radius: 999px;
+      background: rgba(245, 158, 11, 0.14);
+      color: #fbbf24;
+      font-size: 12px;
+      font-weight: 650;
+      text-decoration: none;
+    }
+    .update-chip[hidden] { display: none; }
     h2 {
       margin: 0 0 18px;
       font-size: 15px;
@@ -568,7 +595,7 @@
   <div class="login" id="login">
     <div class="box">
       <h1>输入面板密码</h1>
-      <p class="hint">这个页面受密码保护</p>
+      <p class="hint">这个页面受密码保护 · v{{ version }}</p>
       <label for="loginPassword">密码</label>
       <input id="loginPassword" type="password" />
       <div class="apply-row" style="border-top:none;padding-top:0;">
@@ -581,7 +608,11 @@
   <div class="app-container">
     <header>
       <div class="inner header-row">
-        <h1>Telegram 下载机器人</h1>
+        <div class="brand">
+          <h1>Telegram 下载机器人</h1>
+          <span class="version">v{{ version }}</span>
+          <a class="update-chip" id="updateChip" hidden href="https://github.com/kuke2733/tg-bot-dl/releases/latest" target="_blank" rel="noopener">有新版本</a>
+        </div>
         <div class="toolbar">
           <div class="status" id="statusPill"><span class="dot"></span><span id="statusText">未启动</span></div>
           <div class="actions">
@@ -887,6 +918,20 @@
       } else {
         verify.classList.remove("show");
       }
+
+      renderUpdate(data);
+    }
+
+    function renderUpdate(data) {
+      const update = data && data.update;
+      const chip = document.getElementById("updateChip");
+      if (!update || !update.has_update || !update.latest) {
+        chip.hidden = true;
+        return;
+      }
+      chip.hidden = false;
+      chip.textContent = "有新版本 v" + update.latest;
+      chip.href = update.url || "https://github.com/kuke2733/tg-bot-dl/releases/latest";
     }
 
     async function refresh() {
@@ -966,8 +1011,17 @@
       });
     });
 
+    async function checkUpdate() {
+      try {
+        const data = await api("/api/update");
+        renderUpdate(data);
+      } catch (err) {}
+    }
+
     refresh();
+    checkUpdate();
     setInterval(refresh, 1500);
+    setInterval(checkUpdate, 30 * 60 * 1000);
   </script>
 </body>
 </html>

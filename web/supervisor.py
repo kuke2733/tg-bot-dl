@@ -10,6 +10,7 @@ from subprocess import PIPE, STDOUT, Popen
 
 import psutil
 
+from bot.version import VERSION
 from web import settings
 
 PROMPTS = (
@@ -49,6 +50,7 @@ class BotSupervisor:
                 "missing": settings.missing_required(data),
                 "in_docker": settings.running_in_docker(),
                 "has_password": bool((data.get("WEB_PASSWORD") or "").strip()),
+                "version": VERSION,
             }
 
     def append(self, line: str):

@@ -136,7 +136,7 @@ jobs:
         run: |
           set -euo pipefail
           git log -1 --pretty=%B > /tmp/release-notes.md
-          gh release create "v$VERSION" docker-compose.yml \
+          gh release create "v$VERSION" \
             --target "${{ github.sha }}" \
             --title "v$VERSION" \
             --notes-file /tmp/release-notes.md

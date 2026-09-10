@@ -98,12 +98,6 @@ docker compose up -d
 
 容器里代理若填 `127.0.0.1`，会自动改写为宿主机地址 `host.docker.internal`。
 
-本仓库已带同一份 `docker-compose.yml`。克隆源码后也可以本地构建：
-
-```bash
-docker compose up -d --build
-```
-
 也可以改用 GitHub Container Registry 镜像：`ghcr.io/kuke2733/tg-bot-dl:latest`。
 
 

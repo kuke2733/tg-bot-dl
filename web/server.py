@@ -4,7 +4,8 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, session
 
-from web import settings
+from bot.version import VERSION
+from web import settings, updates
 from web.supervisor import supervisor
 
 ROOT = Path(__file__).resolve().parent
@@ -33,19 +34,30 @@ def authorized() -> bool:
 
 @app.get("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", version=VERSION)
 
 
 @app.get("/api/status")
 def api_status():
     snap = supervisor.snapshot()
     snap["authorized"] = authorized()
+    snap["update"] = updates.info(wait=False)
     if not snap["authorized"]:
         snap["settings"] = {}
         snap["logs"] = ""
         snap["missing"] = []
     response = jsonify(snap)
     response.headers['Content-Type'] = 'application/json; charset=utf-8'
+    return response
+
+
+@app.get("/api/update")
+def api_update():
+    response = jsonify({
+        "update": updates.info(wait=True),
+        "in_docker": settings.running_in_docker(),
+    })
+    response.headers["Content-Type"] = "application/json; charset=utf-8"
     return response
 
 
