@@ -8,7 +8,7 @@ from pyrogram.enums import ParseMode
 from pyrogram.filters import command, document, media, text
 from pyrogram.handlers.callback_query_handler import CallbackQueryHandler
 from pyrogram.handlers.message_handler import MessageHandler
-from pyrogram.types import BotCommand, Message
+from pyrogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.app import DL_FOLDER, user
 from bot import folder, listener, sysinfo
@@ -16,7 +16,7 @@ from bot.download import handler as download_handler
 from bot.download import manager as download_manager
 from bot.download import queueview
 from bot.filebrowser import listFiles
-from bot.util import checkAdmins
+from bot.util import checkAdmins, is_admin_user
 
 LINK_HOSTS = {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}
 LINK_HELP = (
@@ -26,7 +26,7 @@ LINK_HELP = (
 )
 
 bot_help = """
-把文件发给我，就会下载到这台电脑。
+把文件发给我，就会下载到这台电脑里。
 
 【怎么改名】（不用写后缀，自动补）
 1. 转发时写上名字（先到名字、再到文件）
@@ -34,9 +34,6 @@ bot_help = """
 3. 发文件时，在说明里写名字
 4. /add <链接> <名字>
 一组文件时，以上改名只作用于文件夹名。
-
-【相册】
-一次发多个文件会放进同一个文件夹；单个文件不建文件夹。
 
 【其它】
 下载中可点「停止」。禁止转发的内容用 /add 下。
@@ -99,7 +96,6 @@ def register(app: Client):
     addCommand(app, pauseQueue, "pause")
     addCommand(app, resumeQueue, "resume")
     addCommand(app, listener.listen, "listen")
-    addCommand(app, listener.unlisten, "unlisten")
     addCommand(app, listener.listening, "listening")
     app.add_handler(MessageHandler(onIncomingMessage), group=-100)
     # 频道监听要先于 addFile 的媒体处理器注册：同一组内先匹配先执行，
@@ -160,7 +156,6 @@ async def set_menu(app: Client):
             BotCommand("pause", "暂停接收新任务"),
             BotCommand("resume", "恢复下载队列"),
             BotCommand("listen", "监听频道自动下载"),
-            BotCommand("unlisten", "停止监听频道"),
             BotCommand("listening", "查看监听的频道"),
         ]
     )
@@ -179,8 +174,38 @@ async def start(_, message: Message):
         你好！
         把文件发给我，我会下载到这台电脑里。
         需要帮助的话，发送 /help
-    """)
+    """),
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("📋 下载队列", callback_data="menu queue"),
+                 InlineKeyboardButton("📂 文件管理", callback_data="menu files")],
+                [InlineKeyboardButton("📡 监听频道", callback_data="menu listening"),
+                 InlineKeyboardButton("💾 磁盘空间", callback_data="menu usage")],
+                [InlineKeyboardButton("❓ 帮助", callback_data="menu help")],
+            ]
+        ),
     )
+
+
+async def handle_menu_callback(callback: CallbackQuery) -> None:
+    """/start 菜单按钮：以机器人回复的方式打开对应页面。"""
+    mapping = {
+        "queue": showQueue,
+        "files": listFiles,
+        "listening": listener.listening,
+        "usage": usage,
+        "help": botHelp,
+    }
+    action = (callback.data or "").split(" ", 1)[-1]
+    fn = mapping.get(action)
+    if fn is None:
+        await callback.answer()
+        return
+    if not is_admin_user(callback.from_user):
+        await callback.answer("你不是管理员", show_alert=True)
+        return
+    await callback.answer()
+    await fn(None, callback.message)
 
 
 async def botHelp(_, message: Message):
@@ -234,7 +259,7 @@ async def useFolder(_, message: Message):
     if userSetPath != path:
         await message.reply(f"注意：实际目录是 `{path}`，不是 `{' '.join(args[1:])}`")
     folder.set(path)
-    await message.reply("好的，现在把文件发给我，我会保存到这个目录。")
+    await message.reply(f"已切换到 `{path}`，直接发文件即可。")
 
 
 async def leaveFolder(_, message: Message):

@@ -319,11 +319,7 @@ async def enqueue_messages(
             parse_mode=ParseMode.MARKDOWN,
         )
     else:
-        summary = (
-            f"这一组 {len(messages)} 个文件将保存到文件夹 `{subfolder}`，"
-            "下载进度会在这条消息里更新。\n"
-            "回复本条消息可修改文件夹名称。"
-        )
+        summary = f"{len(messages)} 个文件 → 文件夹 `{subfolder}`，回复本条可改名。"
         target = reply_to or messages[0]
         status = await _status_message(target, summary, notice)
 
@@ -381,7 +377,7 @@ async def addFromLink(link_message: Message, chat: int | str, message_id: int) -
         logging.exception("通过用户账号读取消息失败 chat=%s message_id=%s", chat, message_id)
         await _status_message(
             link_message,
-            "用当前用户账号找不到这条消息。请确认这个账号已经加入对应频道或群组。",
+            "用户账号读不到这条消息，请确认已加入该频道。",
             notice,
         )
         return

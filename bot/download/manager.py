@@ -1185,7 +1185,7 @@ def path_in_use(rel_path: str) -> bool:
 
 async def handle_callback(_, callback: CallbackQuery) -> None:
     data = callback.data or ""
-    if data.startswith("qstopb ") or data.startswith("qstop ") or data.startswith("qgoto ") or data == "qref":
+    if data.startswith("qstopb ") or data.startswith("qstop ") or data.startswith("qgoto ") or data == "qref" or data == "qcancelall":
         # /queue 队列视图的回调
         from bot.download import queueview
 
@@ -1214,6 +1214,18 @@ async def handle_callback(_, callback: CallbackQuery) -> None:
         return
     if data.startswith("hdel "):
         await handle_hash_decision(callback, False)
+        return
+    if data.startswith("unlisten "):
+        # 监听面板的「取消监听」按钮
+        from bot import listener
+
+        await listener.handle_unlisten_callback(callback)
+        return
+    if data.startswith("menu "):
+        # /start 的按钮菜单
+        from bot import commands
+
+        await commands.handle_menu_callback(callback)
         return
     if data.startswith("f"):
         # /files 文件管理的回调统一由 filebrowser 处理

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from pyrogram.client import Client
+from pyrogram.errors import MessageNotModified
 from pyrogram.enums.parse_mode import ParseMode
 from pyrogram.types import (
     CallbackQuery,
@@ -15,7 +18,9 @@ from pyrogram.types import (
 )
 
 from bot.app import BASE_FOLDER
-from bot.download.manager import path_in_use
+from bot.download import manager
+from bot.download.manager import finalize_queued_stopped, mark_download_stopped, path_in_use
+from bot.download.store import delete_by_path
 from bot.util import clip_button_text, humanReadableSize
 
 # 一次最多展示的条目数量，避免消息和按钮超出 Telegram 限制
@@ -117,6 +122,7 @@ def make_listing_view(rel_dir: str) -> tuple[FilesView, str, InlineKeyboardMarku
     nav = []
     if view.rel_dir:
         nav.append(InlineKeyboardButton("⬅️ 上一级", callback_data="fup"))
+        nav.append(InlineKeyboardButton("🗑 删除此目录", callback_data="fdeldir"))
     nav.append(InlineKeyboardButton("🔄 刷新", callback_data="fref"))
     rows.append(nav)
     return view, "\n".join(lines), InlineKeyboardMarkup(rows)
@@ -161,9 +167,25 @@ def build_delete_confirm(view: FilesView, index: int) -> tuple[str, InlineKeyboa
     return text, keyboard
 
 
+def build_dir_delete_confirm(view: FilesView) -> tuple[str, InlineKeyboardMarkup]:
+    name = view.rel_dir.rsplit("/", 1)[-1]
+    text = f"⚠️ 确认删除目录「{name}」？\n目录内全部内容将被删除，无法恢复。"
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ 确认删除", callback_data="fdeldirok"),
+                InlineKeyboardButton("❌ 取消", callback_data="fref"),
+            ]
+        ]
+    )
+    return text, keyboard
+
+
 async def edit_view(message: Message, text: str, markup: InlineKeyboardMarkup | None) -> None:
     try:
         await message.edit(text, reply_markup=markup, parse_mode=ParseMode.DISABLED)
+    except MessageNotModified:
+        pass  # 列表内容没变化（比如点了刷新），无需处理
     except Exception as exc:
         logging.debug("更新文件管理消息失败：%s: %s", type(exc).__name__, exc)
 
@@ -196,8 +218,67 @@ async def delete_entry(
         await show_listing(message, view.rel_dir)
         return
     logging.warning("已通过 /files 删除文件：%s", rel_path)
+    # 去重记录同步失效，否则下次发同一个文件会被误判「下载过」
+    delete_by_path(rel_path)
     await callback.answer("已删除")
     await show_listing(message, view.rel_dir)
+
+
+async def delete_current_dir(
+    callback: CallbackQuery, message: Message, view: FilesView
+) -> None:
+    """删除当前所在的子目录（含全部内容），并同步清理去重记录。
+    目录内有正在下载的文件时，先自动取消占用它的下载任务再删除。"""
+    directory = view.abs_dir()
+    base = Path(BASE_FOLDER)
+    # 先收集目录内全部文件的相对路径（自动取消收尾会删掉部分文件，之后再收集就漏了）
+    record_paths = [
+        p.relative_to(base).as_posix()
+        for p in directory.rglob("*")
+        if p.is_file()
+    ]
+
+    def busy_files() -> list[str]:
+        return [
+            p.relative_to(base).as_posix()
+            for p in directory.rglob("*")
+            if p.is_file() and path_in_use(p.relative_to(base).as_posix())
+        ]
+
+    busy = busy_files()
+    if busy:
+        # 自动取消占用该目录的下载任务（下载中的标记停止，排队中的立即收尾）
+        for download in list(manager.downloads) + list(manager.active_downloads):
+            rel = download.filename
+            if rel in busy or f"{rel}.temp" in busy:
+                manager.mark_download_stopped(download)
+                if download.task is None and download.batch is None:
+                    await manager.finalize_queued_stopped(download)
+        # 该目录是某个监听频道的文件夹时，一并中止它的历史回填（否则会立刻重建目录）
+        from bot import listener
+
+        listener.cancel_backfill_by_folder(view.rel_dir)
+        for _ in range(15):  # 最多等 ~4.5 秒让文件句柄释放
+            if not busy_files():
+                break
+            await asyncio.sleep(0.3)
+        if busy_files():
+            await callback.answer("目录被下载占用，取消后仍未释放，请稍后再试。")
+            return
+
+    try:
+        shutil.rmtree(directory)
+    except OSError as exc:
+        logging.warning("删除目录失败：%s %s", directory, exc)
+        await callback.answer("删除失败，目录可能被占用。")
+        await show_listing(message, view.rel_dir)
+        return
+    for rel in record_paths:
+        delete_by_path(rel)
+    logging.warning("已通过 /files 删除目录：%s", view.rel_dir)
+    await callback.answer("目录已删除")
+    parent = view.rel_dir.rsplit("/", 1)[0] if "/" in view.rel_dir else ""
+    await show_listing(message, parent)
 
 
 async def handle_files_callback(callback: CallbackQuery) -> None:
@@ -218,6 +299,19 @@ async def handle_files_callback(callback: CallbackQuery) -> None:
         await show_listing(message, parent)
         return
 
+    if data == "deldir":
+        # 删除当前所在的子目录（根目录没有这个按钮，双保险再拦一次）
+        if not view.rel_dir:
+            await callback.answer("根目录不能删除")
+            return
+        text, keyboard = build_dir_delete_confirm(view)
+        await edit_view(message, text, keyboard)
+        return
+
+    if data == "deldirok":
+        await delete_current_dir(callback, message, view)
+        return
+
     if data == "fref":
         await callback.answer("已刷新")
         await show_listing(message, view.rel_dir)
@@ -225,6 +319,19 @@ async def handle_files_callback(callback: CallbackQuery) -> None:
 
     action, _, arg = data.partition(" ")
     index = int(arg) if arg.isdigit() else -1
+
+    if action == "fdeldir":
+        # 删除当前所在的子目录（根目录没有这个按钮，双保险再拦一次）
+        if not view.rel_dir:
+            await callback.answer("根目录不能删除")
+            return
+        text, keyboard = build_dir_delete_confirm(view)
+        await edit_view(message, text, keyboard)
+        return
+
+    if action == "fdeldirok":
+        await delete_current_dir(callback, message, view)
+        return
 
     if action == "fdir":
         if 0 <= index < len(view.entries) and view.entries[index][1]:

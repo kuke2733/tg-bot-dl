@@ -2,16 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import time
 from pathlib import Path
 
 from bot.app import BASE_FOLDER
+from bot.download import store
 from bot.download.types import Batch
 
 # 残留文件后台重试清理的间隔和总时长
 CLEANUP_RETRY_INTERVAL = 2.0
 CLEANUP_RETRY_TIMEOUT = 300.0
+
+
+def _forget_record(file_path: Path) -> None:
+    """文件被删后同步清掉去重数据库里的记录，避免下次发同一个文件被误判「下载过」。"""
+    try:
+        rel = os.path.relpath(file_path, BASE_FOLDER).replace(os.sep, "/")
+        store.delete_by_path(rel)
+    except Exception:
+        logging.debug("清理去重记录失败：%s", file_path, exc_info=True)
 
 
 def cleanup_directory(directory: Path, folder: str) -> tuple[int, int]:
@@ -33,6 +44,7 @@ def cleanup_directory(directory: Path, folder: str) -> tuple[int, int]:
             try:
                 entry.unlink()
                 deleted += 1
+                _forget_record(entry)
                 logging.warning("已删除文件：%s", entry.name)
             except OSError as e:
                 remaining += 1

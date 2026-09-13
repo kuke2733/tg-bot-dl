@@ -48,13 +48,8 @@ def humanReadableTime(s: int) -> str:
 
 
 def _identity_tokens(message: Message) -> list[str]:
-    tokens = []
-    user = message.from_user
+    tokens = _user_tokens(message.from_user)
     chat = message.chat
-    if user:
-        if user.username:
-            tokens.append("@" + user.username.lower())
-        tokens.append(str(user.id))
     if chat:
         if chat.username:
             tokens.append("@" + chat.username.lower())
@@ -62,16 +57,38 @@ def _identity_tokens(message: Message) -> list[str]:
     return tokens
 
 
-def is_admin(message: Message) -> bool:
+def _user_tokens(user) -> list[str]:
+    tokens = []
+    if user:
+        if user.username:
+            tokens.append("@" + user.username.lower())
+        tokens.append(str(user.id))
+    return tokens
+
+
+def _allowed_admin_tokens() -> list[str]:
     allowed = []
     for item in ADMINS:
         item = (item or "").strip()
         if not item:
             continue
         allowed.append(item.lower() if item.startswith("@") else item)
+    return allowed
+
+
+def is_admin(message: Message) -> bool:
+    allowed = _allowed_admin_tokens()
     if not allowed:
         return False
     return any(token in allowed for token in _identity_tokens(message))
+
+
+def is_admin_user(user) -> bool:
+    """按用户对象判断管理员（回调点击者是 from_user，不是面板消息的发送者）。"""
+    allowed = _allowed_admin_tokens()
+    if not allowed:
+        return False
+    return any(token in allowed for token in _user_tokens(user))
 
 
 def checkAdmins(func: Coroutine) -> Coroutine:

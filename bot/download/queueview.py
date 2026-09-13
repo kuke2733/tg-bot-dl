@@ -14,7 +14,9 @@ from bot.download.manager import (
     active_downloads,
     delete_message_later,
     downloads,
+    finalize_queued_stopped,
     handle_stop_single,
+    mark_download_stopped,
     safe_edit,
     stop,
     stop_batch_now,
@@ -25,7 +27,7 @@ from bot.util import clip_button_text, humanReadableSize
 QUEUE_MAX_ROWS = 50
 # 定位消息存留时间（秒）：足够点引用跳转，随后自动删除
 PROGRESS_POINTER_LIFETIME = 15.0
-PROGRESS_POINTER_TEXT = "⬆️ 上面就是这条任务的下载进度，点本条消息顶部的引用即可跳转，稍后自动删除。"
+PROGRESS_POINTER_TEXT = "⬆️ 上面是这条任务的下载进度，点引用跳转。"
 
 
 def _download_queue_line(download) -> str:
@@ -108,7 +110,8 @@ def render_queue() -> tuple[str, InlineKeyboardMarkup | None]:
     if len(rows) > QUEUE_MAX_ROWS:
         lines.append(f"…还有 {len(rows) - QUEUE_MAX_ROWS} 个任务未显示")
     keyboard = [[cancel, goto] if goto else [cancel] for _, cancel, goto in shown]
-    keyboard.append([InlineKeyboardButton("🔄 刷新", callback_data="qref")])
+    keyboard.append([InlineKeyboardButton("🔄 刷新", callback_data="qref"),
+                     InlineKeyboardButton("🧹 全部取消", callback_data="qcancelall")])
     return "\n".join(lines), InlineKeyboardMarkup(keyboard)
 
 
@@ -167,6 +170,23 @@ async def handle_queue_goto(callback: CallbackQuery, chat_id: int, message_id: i
     asyncio.create_task(delete_message_later(pointer, PROGRESS_POINTER_LIFETIME))
 
 
+async def handle_cancel_all(callback: CallbackQuery) -> None:
+    """一键取消：停止并清空所有排队与下载中的任务（含批次）。"""
+    for batch in list(manager.active_batches.values()):
+        batch.stopped = True  # 面板即时隐藏该批次；文件清理在后台完成
+        asyncio.create_task(_stop_batch_in_background(batch))
+    for download in list(manager.downloads) + list(manager.active_downloads):
+        if download.batch is not None:
+            continue  # 批次内任务由 stop_batch_now 统一收尾
+        manager.mark_download_stopped(download)
+        if download.task is None:
+            # 排队中还没开始传输：立即收尾，不等出队
+            await manager.finalize_queued_stopped(download)
+    await callback.answer("已全部取消")
+    if callback.message is not None:
+        await refresh_queue_message(callback.message)
+
+
 async def handle_queue_callback(callback: CallbackQuery) -> None:
     data = callback.data or ""
     if data.startswith("qstopb "):
@@ -176,5 +196,7 @@ async def handle_queue_callback(callback: CallbackQuery) -> None:
     elif data.startswith("qgoto "):
         _, chat_id, message_id = data.split()
         await handle_queue_goto(callback, int(chat_id), int(message_id))
+    elif data == "qcancelall":
+        await handle_cancel_all(callback)
     elif data == "qref":
         await handle_queue_refresh(callback)

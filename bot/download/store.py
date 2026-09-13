@@ -114,6 +114,17 @@ def delete_by_unique_id(unique_id: str) -> None:
             conn.execute("DELETE FROM downloads WHERE unique_id = ?", (unique_id,))
 
 
+def delete_by_path(path: str) -> int:
+    """按相对路径删除去重记录：文件被删后记录也要失效，避免下次误判「下载过」。"""
+    normalized = (path or "").replace("\\", "/").strip("/")
+    if not normalized:
+        return 0
+    with _lock:
+        with _connect() as conn:
+            cur = conn.execute("DELETE FROM downloads WHERE path = ?", (normalized,))
+            return cur.rowcount
+
+
 def remember(unique_id: str, sha256: str, size: int, path: str) -> None:
     unique_id = unique_id or ""
     sha256 = sha256 or ""

@@ -5,8 +5,7 @@ from pyrogram import idle
 from pyrogram.errors import FloodWait
 
 from bot.app import app, user
-from bot import commands
-from bot import notify
+from bot import commands, listener, notify
 from bot.download import manager as download_manager
 
 # 会话健康检查：连续失败达到阈值就重启连接。
@@ -35,6 +34,9 @@ async def session_monitor():
         await asyncio.sleep(SESSION_CHECK_INTERVAL)
         try:
             await asyncio.wait_for(app.get_me(), timeout=SESSION_CHECK_TIMEOUT)
+            if user:
+                # 用户账号承担收帖和下载，会话假死同样要发现并重启
+                await asyncio.wait_for(user.get_me(), timeout=SESSION_CHECK_TIMEOUT)
             failures = 0
             continue
         except FloodWait:
@@ -63,6 +65,7 @@ async def main():
     if user:
         logging.warning("Starting normal user")
         await user.start()
+        listener.register_user_channel_handler(user)
     logging.warning("Starting download manager...")
     manager = asyncio.create_task(download_manager.run())
     try:
