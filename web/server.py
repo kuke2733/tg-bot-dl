@@ -9,7 +9,11 @@ from web import settings, updates
 from web.supervisor import supervisor
 
 ROOT = Path(__file__).resolve().parent
-app = Flask(__name__, template_folder=str(ROOT / "templates"))
+app = Flask(
+    __name__,
+    template_folder=str(ROOT / "templates"),
+    static_folder=str(ROOT / "static"),
+)
 
 
 def secret_key() -> str:

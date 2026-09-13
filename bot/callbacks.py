@@ -26,7 +26,6 @@ BATCH_DUP_SKIP = "bdupx "
 HASH_KEEP = "hkeep "
 HASH_DELETE = "hdel "
 UNLISTEN = "unlisten "
-MENU = "menu "
 FILES = "f"
 
 Handler = Callable[[CallbackQuery], Awaitable[None]]

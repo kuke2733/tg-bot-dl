@@ -9,7 +9,7 @@ from pyrogram import filters
 from pyrogram.filters import command, document, media, text
 from pyrogram.handlers.callback_query_handler import CallbackQueryHandler
 from pyrogram.handlers.message_handler import MessageHandler
-from pyrogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardMarkup
+from pyrogram.types import BotCommand, Message, ReplyKeyboardMarkup
 
 from bot import callbacks
 from bot.app import DL_FOLDER, user
@@ -17,7 +17,7 @@ from bot import folder, listener, sysinfo
 from bot.download import handler as download_handler
 from bot.download import queueview
 from bot.filebrowser import listFiles
-from bot.util import checkAdmins, is_admin_user
+from bot.util import checkAdmins
 
 LINK_HOSTS = {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}
 LINK_HELP = (
@@ -202,49 +202,10 @@ async def start(_, message: Message):
         你好！
         把文件发给我，我会下载到这台电脑里。
         需要帮助的话，发送 /help
+        也可以点底部按钮快速打开常用功能。
     """),
-        reply_markup=InlineKeyboardMarkup(
-            [
-                [InlineKeyboardButton("📋 下载队列", callback_data="menu queue"),
-                 InlineKeyboardButton("📂 文件管理", callback_data="menu files")],
-                [InlineKeyboardButton("📡 监听频道", callback_data="menu listening"),
-                 InlineKeyboardButton("💾 磁盘空间", callback_data="menu usage")],
-                [InlineKeyboardButton("❓ 帮助", callback_data="menu help")],
-            ]
-        ),
+        reply_markup=REPLY_KEYBOARD,
     )
-    # 回复键盘必须附着在某条消息上才能送达客户端；发一条静默消息带上键盘后
-    # 立刻删除，聊天里不留痕，客户端侧的键盘会常驻。新会话发一次 /start 即有。
-    try:
-        note = await message.reply(
-            "⌨️",
-            reply_markup=REPLY_KEYBOARD,
-            disable_notification=True,
-        )
-        await note.delete()
-    except Exception:
-        logging.warning("常驻键盘未能随 /start 下发", exc_info=True)
-
-
-async def handle_menu_callback(callback: CallbackQuery) -> None:
-    """/start 菜单按钮：以机器人回复的方式打开对应页面。"""
-    mapping = {
-        "queue": showQueue,
-        "files": listFiles,
-        "listening": listener.listening,
-        "usage": usage,
-        "help": botHelp,
-    }
-    action = (callback.data or "").split(" ", 1)[-1]
-    fn = mapping.get(action)
-    if fn is None:
-        await callback.answer()
-        return
-    if not is_admin_user(callback.from_user):
-        await callback.answer("你不是管理员", show_alert=True)
-        return
-    await callback.answer()
-    await fn(None, callback.message)
 
 
 async def botHelp(_, message: Message):
@@ -332,7 +293,3 @@ async def resumeQueue(_, message: Message):
     if released:
         text += f"磁盘满驻留的 {released} 个任务已重新排队。"
     await message.reply(text)
-
-
-# —— 按钮回调注册，协议前缀与路由见 bot/callbacks.py ——
-callbacks.on(callbacks.MENU)(handle_menu_callback)

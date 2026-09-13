@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Telegram 下载机器人</title>
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='logo.png') }}" />
   <style>
     :root {
       --bg: #0f172a;
@@ -105,6 +106,14 @@
       align-items: center;
       gap: 10px;
       min-width: 0;
+    }
+    .brand-logo {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      flex: none;
+      object-fit: cover;
+      box-shadow: 0 2px 8px rgb(0 0 0 / 0.25);
     }
     .version {
       flex: none;
@@ -570,6 +579,19 @@
       -webkit-text-fill-color: transparent;
       background-clip: text;
     }
+    .login-brand {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .login-brand .brand-logo {
+      width: 64px;
+      height: 64px;
+      border-radius: 16px;
+    }
     .login .hint { margin: 0 0 20px; }
     .login .apply-row { margin-top: 18px; }
     .wide { grid-column: 1 / -1; }
@@ -594,7 +616,10 @@
 <body>
   <div class="login" id="login">
     <div class="box">
-      <h1>输入面板密码</h1>
+      <div class="login-brand">
+        <img class="brand-logo" src="{{ url_for('static', filename='logo.png') }}" alt="Logo" />
+        <h1>输入面板密码</h1>
+      </div>
       <p class="hint">这个页面受密码保护 · v{{ version }}</p>
       <label for="loginPassword">密码</label>
       <input id="loginPassword" type="password" />
@@ -609,6 +634,7 @@
     <header>
       <div class="inner header-row">
         <div class="brand">
+          <img class="brand-logo" src="{{ url_for('static', filename='logo.png') }}" alt="Logo" />
           <h1>Telegram 下载机器人</h1>
           <span class="version">v{{ version }}</span>
           <a class="update-chip" id="updateChip" hidden href="https://github.com/kuke2733/tg-bot-dl/releases/latest" target="_blank" rel="noopener">有新版本</a>
