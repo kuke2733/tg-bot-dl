@@ -85,18 +85,18 @@ def parse_message_link(raw: str):
 
 def register(app: Client):
     addCommand(app, start, "start")
-    addCommand(app, botHelp, "help")
-    addCommand(app, usage, "usage")
-    addCommand(app, useFolder, "use")
-    addCommand(app, leaveFolder, "leave")
-    addCommand(app, getFolder, "get")
     addCommand(app, addByLink, "add")
     addCommand(app, showQueue, "queue")
     addCommand(app, listFiles, "files")
-    addCommand(app, pauseQueue, "pause")
-    addCommand(app, resumeQueue, "resume")
     addCommand(app, listener.listen, "listen")
     addCommand(app, listener.listening, "listening")
+    addCommand(app, useFolder, "use")
+    addCommand(app, getFolder, "get")
+    addCommand(app, leaveFolder, "leave")
+    addCommand(app, pauseQueue, "pause")
+    addCommand(app, resumeQueue, "resume")
+    addCommand(app, usage, "usage")
+    addCommand(app, botHelp, "help")
     app.add_handler(MessageHandler(onIncomingMessage), group=-100)
     # 频道监听要先于 addFile 的媒体处理器注册：同一组内先匹配先执行，
     # 频道帖由监听接管，避免 addFile 往频道里回「你不是管理员」。
@@ -145,18 +145,18 @@ async def set_menu(app: Client):
     await app.set_bot_commands(
         [
             BotCommand("start", "开始使用"),
-            BotCommand("help", "查看帮助"),
-            BotCommand("usage", "查看磁盘空间"),
-            BotCommand("use", "设置下载子目录"),
-            BotCommand("get", "查看当前目录"),
-            BotCommand("leave", "回到根目录"),
             BotCommand("add", "通过链接下载文件"),
             BotCommand("queue", "查看下载队列"),
             BotCommand("files", "管理已下载文件"),
-            BotCommand("pause", "暂停接收新任务"),
-            BotCommand("resume", "恢复下载队列"),
             BotCommand("listen", "监听频道自动下载"),
             BotCommand("listening", "查看监听的频道"),
+            BotCommand("use", "设置下载子目录"),
+            BotCommand("get", "查看当前目录"),
+            BotCommand("leave", "回到根目录"),
+            BotCommand("pause", "暂停接收新任务"),
+            BotCommand("resume", "恢复下载队列"),
+            BotCommand("usage", "查看磁盘空间"),
+            BotCommand("help", "查看帮助"),
         ]
     )
 

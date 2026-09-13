@@ -185,7 +185,7 @@ python start.py
 | `bot/callbacks.py` | 按钮回调的前缀常量与注册制路由：各功能模块导入时注册处理器，dispatch 按前缀长度匹配。 |
 | `bot/version.py` | 应用名、版本号，以及上报给 Telegram 的设备信息。 |
 | `bot/run.py` | 启动顺序：注册命令 → 登录 → 启动下载队列 → 等待消息。另有会话健康检查：连接假死时自动重启连接，进程和下载队列不动，传输断点续传。 |
-| `bot/commands.py` | `/start`、`/help`、`/usage`、`/use`、`/add`、`/queue`、`/pause`、`/resume`、`/files`、`/listen`、`/listening`，以及命令菜单。 |
+| `bot/commands.py` | `/start`、`/add`、`/queue`、`/files`、`/listen`、`/listening`、`/use`、`/get`、`/leave`、`/pause`、`/resume`、`/usage`、`/help`，以及命令菜单。 |
 | `bot/folder.py` | 记住当前保存目录。`/use` 切换，`/leave` 回到 `data/`。 |
 | `bot/filebrowser.py` | `/files` 的目录浏览、进入子目录/返回上级、文件删除，删除有二次确认。 |
 | `bot/listener.py` | `/listen` 频道监听自动下载：每频道文件夹、广告过滤（关键词 + 上游正则组合规则 + 可疑文件识别）、管理员会话按频道聚合摘要。 |
