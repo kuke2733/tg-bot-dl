@@ -11,21 +11,24 @@ from bot import folder
 from bot.app import BASE_FOLDER, app, user
 from bot.download.groups import MediaGroupCollector
 from bot.download import persist as queue_persist
-from bot.download.manager import (
+from bot.download import state
+from bot.download.batches import refresh_batch
+from bot.download.dedup import (
     UNIQUE_DUP_TEXT,
+    mark_batch_unique_duplicate,
+    register_unique_prompt,
+    unique_duplicate_keyboard,
+)
+from bot.download.render import safe_edit
+from bot.download.state import (
     active_batches,
     downloads,
+    emit_download_event,
     find_rename_target,
     is_unique_duplicate,
-    mark_batch_unique_duplicate,
     queue_download,
-    refresh_batch,
     register_rename_target,
-    register_unique_prompt,
     rename_targets,
-    safe_edit,
-    unique_duplicate_keyboard,
-    emit_download_event,
 )
 from bot.download.names import (
     album_folder_name,

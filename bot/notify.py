@@ -7,7 +7,7 @@ from pathlib import Path
 from pyrogram.enums import ParseMode
 
 from bot.app import CONFIG_FOLDER, app
-from bot.listener import _admin_chat
+from bot.util import admin_chat
 from bot.version import APP_NAME, VERSION
 
 # 上次运行记录的版本号：与当前版本不一致就给管理员发一条更新提示
@@ -40,7 +40,7 @@ async def notify_version_update() -> None:
         logging.warning("首次运行，记录版本号 %s", VERSION)
         _save(VERSION)
         return
-    admin = await _admin_chat()
+    admin = await admin_chat()
     if admin is None:
         logging.warning("版本更新提示未发送：管理员会话不可用，下次启动会重试")
         return
@@ -63,7 +63,7 @@ async def notify_disk_full(filename: str) -> None:
     if now - _last_disk_full_notify < DISK_FULL_NOTIFY_INTERVAL:
         return
     _last_disk_full_notify = now
-    admin = await _admin_chat()
+    admin = await admin_chat()
     if admin is None:
         logging.warning("磁盘已满但管理员会话不可用，无法通知")
         return

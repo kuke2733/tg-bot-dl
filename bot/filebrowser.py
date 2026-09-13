@@ -18,8 +18,10 @@ from pyrogram.types import (
 )
 
 from bot.app import BASE_FOLDER
-from bot.download import manager
-from bot.download.manager import finalize_queued_stopped, mark_download_stopped, path_in_use
+from bot import callbacks
+from bot.download import state
+from bot.download.lifecycle import finalize_queued_stopped
+from bot.download.state import mark_download_stopped, path_in_use
 from bot.download.store import delete_by_path
 from bot.util import clip_button_text, humanReadableSize
 
@@ -248,12 +250,12 @@ async def delete_current_dir(
     busy = busy_files()
     if busy:
         # 自动取消占用该目录的下载任务（下载中的标记停止，排队中的立即收尾）
-        for download in list(manager.downloads) + list(manager.active_downloads):
+        for download in list(state.downloads) + list(state.active_downloads):
             rel = download.filename
             if rel in busy or f"{rel}.temp" in busy:
-                manager.mark_download_stopped(download)
+                mark_download_stopped(download)
                 if download.task is None and download.batch is None:
-                    await manager.finalize_queued_stopped(download)
+                    await finalize_queued_stopped(download)
         # 该目录是某个监听频道的文件夹时，一并中止它的历史回填（否则会立刻重建目录）
         from bot import listener
 
@@ -381,3 +383,7 @@ async def listFiles(client: Client, message: Message):
         disable_web_page_preview=True,
     )
     save_view(sent.id, view)
+
+
+# —— 按钮回调注册（协议前缀与路由见 bot/callbacks.py）——
+callbacks.on(callbacks.FILES)(handle_files_callback)

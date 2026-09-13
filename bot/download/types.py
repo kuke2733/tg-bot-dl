@@ -2,13 +2,63 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from pyrogram.client import Client
 from pyrogram.types import Message
 
-UNFINISHED_STATUS = {"waiting", "downloading", "duplicate", "cold"}
-SUCCESS_STATUS = {"done", "content_duplicate"}
-FAILED_STATUS = {"failed", "stopped", "deleted"}
+class Status(StrEnum):
+    """批次条目/下载任务的状态字。StrEnum：与裸字符串比较/入集合都兼容。"""
+
+    WAITING = "waiting"
+    DOWNLOADING = "downloading"
+    DONE = "done"
+    FAILED = "failed"
+    STOPPED = "stopped"
+    DELETED = "deleted"
+    DUPLICATE = "duplicate"
+    SKIPPED = "skipped"
+    CONTENT_DUPLICATE = "content_duplicate"
+    COLD = "cold"
+
+
+class HoldReason(StrEnum):
+    """任务驻留原因（驻留 = 暂不参与调度，但断点与 queue.json 记录保留）。"""
+
+    RETRY = "retry"  # 等待下一轮长周期自动重试
+    DISK = "disk"  # 磁盘写满，等 /resume 释放
+    COLD = "cold"  # 重试轮次用尽，等连接恢复由健康检查唤醒
+
+
+UNFINISHED_STATUS = {Status.WAITING, Status.DOWNLOADING, Status.DUPLICATE, Status.COLD}
+SUCCESS_STATUS = {Status.DONE, Status.CONTENT_DUPLICATE}
+FAILED_STATUS = {Status.FAILED, Status.STOPPED, Status.DELETED}
+
+# 状态展示映射：图标与中文标签，跟枚举放一起作为唯一出处
+STATUS_MARK: dict[Status, str] = {
+    Status.DONE: "✅",
+    Status.WAITING: "⏳",
+    Status.DOWNLOADING: "⬇️",
+    Status.FAILED: "❌",
+    Status.STOPPED: "⏹",
+    Status.DELETED: "🗑️",
+    Status.DUPLICATE: "⚠️",
+    Status.SKIPPED: "⏭",
+    Status.CONTENT_DUPLICATE: "⚠️",
+    Status.COLD: "❄️",
+}
+
+STATUS_LABEL: dict[Status, str] = {
+    Status.DONE: "",
+    Status.WAITING: "等待中",
+    Status.STOPPED: "已停止",
+    Status.DELETED: "已删除",
+    Status.FAILED: "失败",
+    Status.DUPLICATE: "重复",
+    Status.SKIPPED: "已跳过",
+    Status.CONTENT_DUPLICATE: "内容重复",
+    Status.COLD: "等待网络恢复",
+}
 
 
 @dataclass

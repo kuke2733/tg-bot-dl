@@ -10,10 +10,10 @@ from pyrogram.handlers.callback_query_handler import CallbackQueryHandler
 from pyrogram.handlers.message_handler import MessageHandler
 from pyrogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from bot import callbacks
 from bot.app import DL_FOLDER, user
 from bot import folder, listener, sysinfo
 from bot.download import handler as download_handler
-from bot.download import manager as download_manager
 from bot.download import queueview
 from bot.filebrowser import listFiles
 from bot.util import checkAdmins, is_admin_user
@@ -107,7 +107,7 @@ def register(app: Client):
     app.add_handler(
         MessageHandler(checkAdmins(download_handler.renameFromText), text)
     )
-    app.add_handler(CallbackQueryHandler(download_manager.handle_callback))
+    app.add_handler(CallbackQueryHandler(callbacks.dispatch))
 
 
 UNAVAILABLE_HINTS = (
@@ -282,14 +282,18 @@ async def showQueue(_, message: Message):
 
 async def pauseQueue(_, message: Message):
     """暂停接收新的下载任务"""
-    download_manager.set_paused(True)
+    set_paused(True)
     await message.reply("已暂停：排队中的任务不会开始，进行中的会继续下完。发 /resume 恢复。")
 
 
 async def resumeQueue(_, message: Message):
     """恢复下载队列"""
-    released = download_manager.set_paused(False)
+    released = set_paused(False)
     text = "已恢复，排队中的任务会继续下载。"
     if released:
         text += f"磁盘满驻留的 {released} 个任务已重新排队。"
     await message.reply(text)
+
+
+# —— 按钮回调注册（协议前缀与路由见 bot/callbacks.py）——
+callbacks.on(callbacks.MENU)(handle_menu_callback)

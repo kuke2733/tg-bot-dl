@@ -7,23 +7,23 @@ from pathlib import Path
 from pyrogram.enums import ParseMode
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from bot import callbacks
 from bot.app import app
-from bot.download import manager
-from bot.download.manager import (
-    active_batches,
-    active_downloads,
-    cold_holds,
-    delete_message_later,
-    disk_holds,
-    downloads,
+from bot.download import lifecycle, state
+from bot.download.lifecycle import (
     finalize_queued_stopped,
     handle_stop_single,
-    mark_download_stopped,
-    retry_holds,
-    safe_edit,
-    stop,
     stop_batch_now,
     stop_held_download,
+)
+from bot.download.render import delete_message_later, safe_edit
+from bot.download.state import (
+    active_batches,
+    active_downloads,
+    downloads,
+    iter_holds,
+    mark_download_stopped,
+    stop,
 )
 from bot.download.types import Batch
 from bot.util import clip_button_text, humanReadableSize
@@ -55,7 +55,7 @@ def _hold_queue_line(download, kind: str) -> str:
     if kind == "retry":
         return (
             f"⏳ `{clip_button_text(name, 60)}`{size_text} "
-            f"第 {download.retry_round}/{len(manager.LONG_RETRY_DELAYS)} 次自动重试等待中"
+            f"第 {download.retry_round}/{len(lifecycle.LONG_RETRY_DELAYS)} 次自动重试等待中"
         )
     if kind == "disk":
         return f"💾 `{clip_button_text(name, 60)}`{size_text} 磁盘已满，发 /resume 恢复"
@@ -116,28 +116,27 @@ def render_queue() -> tuple[str, InlineKeyboardMarkup | None]:
                 _goto_button(download.progress_message),
             )
         )
-    for held_list, kind in ((retry_holds, "retry"), (disk_holds, "disk"), (cold_holds, "cold")):
-        for download in list(held_list):
-            if download.batch is not None or download.stopped or download.id in stop:
-                continue
-            rows.append(
-                (
-                    _hold_queue_line(download, kind),
-                    InlineKeyboardButton(
-                        f"⏹ {clip_button_text(Path(download.filename).name)}",
-                        callback_data=f"qstop {download.id}",
-                    ),
-                    _goto_button(download.progress_message),
-                )
+    for download, reason in iter_holds():
+        if download.batch is not None or download.stopped or download.id in stop:
+            continue
+        rows.append(
+            (
+                _hold_queue_line(download, reason),
+                InlineKeyboardButton(
+                    f"⏹ {clip_button_text(Path(download.filename).name)}",
+                    callback_data=f"qstop {download.id}",
+                ),
+                _goto_button(download.progress_message),
             )
+        )
 
     if not rows:
-        if manager.paused:
+        if state.paused:
             return "⏸ 下载队列已暂停，发 /resume 恢复。", None
         return "当前没有排队或进行中的下载任务。", None
 
     shown = rows[:QUEUE_MAX_ROWS]
-    lines = [f"📋 下载队列（共 {len(rows)} 个任务）" + ("  ⏸ 已暂停" if manager.paused else "")]
+    lines = [f"📋 下载队列（共 {len(rows)} 个任务）" + ("  ⏸ 已暂停" if state.paused else "")]
     lines += [line for line, _, _ in shown]
     if len(rows) > QUEUE_MAX_ROWS:
         lines.append(f"…还有 {len(rows) - QUEUE_MAX_ROWS} 个任务未显示")
@@ -204,17 +203,17 @@ async def handle_queue_goto(callback: CallbackQuery, chat_id: int, message_id: i
 
 async def handle_cancel_all(callback: CallbackQuery) -> None:
     """一键取消：停止并清空所有排队与下载中的任务（含批次）。"""
-    for batch in list(manager.active_batches.values()):
+    for batch in list(active_batches.values()):
         batch.stopped = True  # 面板即时隐藏该批次；文件清理在后台完成
         asyncio.create_task(_stop_batch_in_background(batch))
-    for download in list(manager.downloads) + list(manager.active_downloads):
+    for download in list(downloads) + list(active_downloads):
         if download.batch is not None:
             continue  # 批次内任务由 stop_batch_now 统一收尾
-        manager.mark_download_stopped(download)
+        mark_download_stopped(download)
         if download.task is None:
             # 排队中还没开始传输：立即收尾，不等出队
-            await manager.finalize_queued_stopped(download)
-    for download in list(retry_holds) + list(disk_holds) + list(cold_holds):
+            await finalize_queued_stopped(download)
+    for download, _why in list(iter_holds()):
         if download.batch is not None:
             continue  # 批次内驻留任务由 stop_batch_now 统一收尾
         await stop_held_download(download)
@@ -236,3 +235,11 @@ async def handle_queue_callback(callback: CallbackQuery) -> None:
         await handle_cancel_all(callback)
     elif data == "qref":
         await handle_queue_refresh(callback)
+
+
+# —— 按钮回调注册（协议前缀与路由见 bot/callbacks.py）——
+callbacks.on(callbacks.Q_STOP_BATCH)(handle_queue_callback)
+callbacks.on(callbacks.Q_STOP)(handle_queue_callback)
+callbacks.on(callbacks.Q_GOTO)(handle_queue_callback)
+callbacks.on(callbacks.Q_REFRESH)(handle_queue_callback)
+callbacks.on(callbacks.Q_CANCEL_ALL)(handle_queue_callback)

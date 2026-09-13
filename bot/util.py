@@ -5,7 +5,7 @@ from typing import Coroutine
 from pyrogram import Client
 from pyrogram.types import Message
 
-from bot.app import ADMINS
+from bot.app import ADMINS, app
 
 KIB = 1024
 MIB = 1024 * KIB
@@ -104,3 +104,27 @@ def checkAdmins(func: Coroutine) -> Coroutine:
         return await func(app, message)
 
     return wrapper
+
+
+# 管理员会话缓存：解析成功一次后复用
+_admin_chat_id: int | None = None
+
+
+async def admin_chat() -> int | None:
+    """解析管理员会话（取 ADMINS 里第一个可用项），成功后缓存。"""
+    global _admin_chat_id
+    if _admin_chat_id is not None:
+        return _admin_chat_id
+    for token in ADMINS:
+        token = (token or "").strip()
+        if not token:
+            continue
+        try:
+            target = int(token) if token.isdigit() else (token if token.startswith("@") else f"@{token}")
+            chat = await app.get_chat(target)
+            _admin_chat_id = chat.id
+            logging.warning("管理员通知发送到会话：%s", chat.id)
+            return _admin_chat_id
+        except Exception:
+            logging.warning("解析管理员会话失败：%s", token)
+    return None

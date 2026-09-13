@@ -12,11 +12,13 @@ from pyrogram.enums import ChatType, ParseMode
 from pyrogram.handlers.message_handler import MessageHandler
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from bot import callbacks
 from bot.app import ADMINS, BASE_FOLDER, CONFIG_FOLDER, app, user
-from bot.download import manager as download_manager
 from bot.download.groups import MediaGroupCollector
 from bot.download.handler import enqueue_messages
+from bot.download.state import download_event_listeners as _dl_event_listeners
 from bot.download.names import media_file_size, sanitize_folder_name
+from bot import util
 from bot.util import clip_button_text, humanReadableSize
 
 # 每个频道的摘要消息接近该长度就另起新消息，旧的留在会话里
@@ -38,7 +40,6 @@ LISTEN_PATH = Path(CONFIG_FOLDER) / "listening.json"
 
 _lock = threading.Lock()
 _config: dict = {"defaults": {}, "chats": {}}
-_admin_chat_id: int | None = None
 digests: dict[int, "Digest"] = {}
 groups = MediaGroupCollector()
 # 每个频道的历史回填任务，删除监听频道文件夹时用于中止回填
@@ -97,25 +98,6 @@ def _effective(entry: dict, key: str):
 
 # ---------- 管理员会话与摘要 ----------
 
-async def _admin_chat() -> int | None:
-    global _admin_chat_id
-    if _admin_chat_id is not None:
-        return _admin_chat_id
-    for token in ADMINS:
-        token = (token or "").strip()
-        if not token:
-            continue
-        try:
-            target = int(token) if token.isdigit() else (token if token.startswith("@") else f"@{token}")
-            chat = await app.get_chat(target)
-            _admin_chat_id = chat.id
-            logging.warning("频道监听通知发送到管理员会话：%s", chat.id)
-            return _admin_chat_id
-        except Exception:
-            logging.warning("解析管理员会话失败：%s", token)
-    return None
-
-
 def digest_add(chat_id: int, title: str, line: str) -> None:
     d = digests.get(chat_id)
     if d is None:
@@ -136,7 +118,7 @@ async def _flush_digest(d: Digest) -> None:
     text = d.render()
     try:
         if d.message is None:
-            admin = await _admin_chat()
+            admin = await util.admin_chat()
             if admin is None:
                 logging.warning("频道摘要无法发送：管理员会话不可用")
                 return
@@ -251,7 +233,7 @@ async def _process_channel_post(message: Message, entry: dict) -> None:
         logging.warning("频道监听跳过疑似广告：%s %s", title, reason)
         return
 
-    admin = await _admin_chat()
+    admin = await util.admin_chat()
     if admin is None:
         logging.warning("频道监听未生效：无法解析管理员会话，请检查 ADMINS 配置")
         return
@@ -527,7 +509,7 @@ def register(client) -> None:
     # 机器人侧只"吞掉"频道帖：避免 addFile 把频道新帖当普通文件下载、往频道里回消息。
     # 真正的收帖在用户账号侧（register_user_channel_handler）。
     client.add_handler(MessageHandler(silence_channel_post, filters.channel))
-    download_manager.download_event_listeners.append(on_download_event)
+    _dl_event_listeners.append(on_download_event)
     logging.warning("频道监听已就绪：%d 个频道（收帖走用户账号）", len(_config.get("chats", {})))
 
 
@@ -535,3 +517,7 @@ def register_user_channel_handler(client) -> None:
     """用户账号侧的频道监听：唯一的收帖路径，机器人无需加入任何频道。"""
     client.add_handler(MessageHandler(on_channel_post, filters.channel))
     logging.warning("用户账号频道监听已就绪")
+
+
+# —— 按钮回调注册（协议前缀与路由见 bot/callbacks.py）——
+callbacks.on(callbacks.UNLISTEN)(handle_unlisten_callback)

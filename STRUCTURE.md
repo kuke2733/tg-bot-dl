@@ -23,6 +23,7 @@ tg-bot-dl/
 │       └── index.html       配置页面
 │
 ├── bot/                     Telegram 机器人
+│   ├── callbacks.py         按钮回调协议：前缀常量与注册制路由
 │   ├── app.py               读取配置，创建 Telegram 连接
 │   ├── version.py           应用名、版本号、上报给 TG 的设备信息
 │   ├── run.py               机器人启动与退出
@@ -38,8 +39,14 @@ tg-bot-dl/
 │       ├── groups.py        一组文件（相册）收齐后再一起处理
 │       ├── fileformat.py    按文件真实格式校正后缀
 │       ├── transfer.py      可续传分片下载（失败重试、耗尽长周期重排、磁盘满识别、坏断点归零）
-│       ├── manager.py       真正执行下载、更新进度、停止下载
+│       ├── manager.py       下载调度循环与单任务执行（downloadFile / 完成处理 / 进度回调）
+│       ├── state.py         共享内存状态：排队/在途任务、批次、驻留表、停止标记、事件回调
+│       ├── lifecycle.py     任务终结与驻留生命周期（停止/失败/长周期重排/冷驻留/磁盘满）
+│       ├── batches.py       批次与任务进度消息编排（刷新、收尾、清理等待）
+│       ├── dedup.py         重复文件询问交互（唯一 ID / 内容哈希弹窗与决策）
+│       ├── restore.py       进程重启后的队列恢复（queue.json → 重建任务）
 │       ├── queueview.py     /queue 队列视图与取消回调
+│       ├── render.py        进度/批次面板的文本渲染与消息编辑辅助
 │       ├── cleanup.py       停止后的文件清理与残留重试
 │       ├── persist.py       下载任务持久化（config/queue.json）与启动恢复
 │       ├── store.py         用 SQLite 记录已下载文件，避免重复下载
@@ -185,7 +192,8 @@ flowchart TB
 | `bot/filebrowser.py` | `/files` 的目录浏览、进入子目录/返回上级、文件删除（二次确认）。 |
 | `bot/listener.py` | `/listen` 频道监听自动下载：每频道文件夹、广告过滤、管理员会话按频道聚合摘要。 |
 | `bot/sysinfo.py` | 给 `/usage` 提供磁盘容量、已用、剩余空间。 |
-| `bot/util.py` | 只允许管理员使用；把字节和秒转成可读的大小、时间。 |
+| `bot/util.py` | 只允许管理员使用；把字节和秒转成可读的大小、时间；解析管理员会话（通知发到这里）。 |
+| `bot/callbacks.py` | 按钮回调的前缀常量与注册制路由：各功能模块导入时注册处理器，dispatch 按前缀长度匹配。 |
 
 ### bot/download/ 下载
 
@@ -196,8 +204,14 @@ flowchart TB
 | `groups.py` | 等一组文件到齐后再一起处理。 |
 | `fileformat.py` | 下载完成后按文件真实格式校正后缀，不改文件内容。 |
 | `transfer.py` | 可续传下载：按 1MB 分片拉取，失败保留 `.temp` 并从偏移重试；短周期重试耗尽抛 `DownloadExhausted` 交由上层长周期重排，写盘 ENOSPC 带磁盘满标记，坏断点（比源文件还大）归零重下。 |
-| `manager.py` | 从队列取出任务，执行下载，更新进度，处理「停止」。一组文件共用一条进度消息。含停止看门狗、大小校验与下载事件广播；短周期重试耗尽后按 5/15/30/60 分钟自动重排，轮次用尽转入冷驻留（断点与记录保留，会话健康检查通过即唤醒继续，天级断网不丢进度），磁盘写满驻留任务并暂停队列等 `/resume` 释放。 |
+| `manager.py` | 调度循环（并发上限、出队闸）与单任务执行 `downloadFile`：拉起传输、核对大小、写去重记录、广播事件。停止看门狗在 `state.py`。 |
+| `state.py` | 全部共享内存状态的唯一出处：排队/在途任务、批次、改名目标、驻留表（key→任务+原因）、停止标记、查重在飞集合、事件回调列表；附带入队、驻留读写、停止标记等轻量操作。 |
+| `lifecycle.py` | 决定任务何时真正结束：手动停止/源消息删除才判死；短周期重试耗尽转长周期重排（5/15/30/60 分钟×4 轮），轮次用尽转冷驻留等连接恢复，磁盘写满驻留并暂停队列。含批次与单任务停止入口。 |
+| `batches.py` | 批次/任务进度消息编排：刷新（限流节流在 render）、批次收尾（空目录清理、落盘）、停止前的清理等待、开始下载提示。 |
+| `dedup.py` | 重复文件的两次询问：入队前唯一 ID 拦截弹窗（配合 handler）、下载后内容哈希相同弹窗；继续/跳过/保留/删除四个决策。 |
+| `restore.py` | 进程重启后的队列恢复：读 `queue.json` 重建批次与任务、重取源消息、`.temp` 断点自动生效；无法恢复的顺带清理断点。 |
 | `queueview.py` | `/queue` 的队列视图：渲染任务列表、取消回调（复用 manager 的停止逻辑）。 |
+| `render.py` | 进度条、批次/条目状态文案、键盘按钮、限流冷却下的消息编辑——纯函数，manager 与 queueview 共用。 |
 | `cleanup.py` | 停止后的文件/文件夹清理，句柄占用时的后台重试删除。 |
 | `persist.py` | 下载任务持久化到 `config/queue.json`（入队即落盘），进程重启后恢复任务并断点续传。 |
 | `store.py` | 本地 SQLite 记录 file_unique_id 和文件哈希，下载前/后拦截重复。 |
@@ -279,12 +293,16 @@ stateDiagram-v2
 | 你想改什么 | 去哪个文件 |
 | :--- | :--- |
 | 机器人回复的中文文案 | `bot/commands.py`、`bot/download/handler.py`、`bot/download/manager.py`、`bot/util.py` |
+| 进度/批次面板的文案与图标 | `bot/download/render.py`、`bot/download/types.py`（状态枚举与映射） |
 | 下载队列（/queue）的展示和取消 | `bot/download/queueview.py` |
 | 文件管理（/files）的浏览和删除 | `bot/filebrowser.py` |
 | 频道监听与广告过滤（/listen） | `bot/listener.py` |
-| 任务持久化与重启恢复 | `bot/download/persist.py`、`bot/download/manager.py` |
+| 任务持久化与重启恢复 | `bot/download/persist.py`、`bot/download/restore.py` |
 | 网页外观和输入框 | `web/templates/index.html` |
 | 配置项有哪些 | `web/settings.py` |
 | 启动方式、代理、Telegram 客户端 | `bot/app.py` |
-| 下载进度、停止按钮 | `bot/download/manager.py` |
+| 下载进度、停止按钮 | `bot/download/render.py`、`bot/download/batches.py` |
+| 失败重试 / 断点保留 / 冷驻留 | `bot/download/lifecycle.py`、`bot/download/transfer.py` |
+| 重复文件询问文案与逻辑 | `bot/download/dedup.py` |
+| 共享状态字段 | `bot/download/state.py` |
 | 文件名规则 | `bot/download/handler.py` |

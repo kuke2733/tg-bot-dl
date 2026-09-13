@@ -6,6 +6,7 @@ from pyrogram.errors import FloodWait
 
 from bot.app import app, user
 from bot import commands, listener, notify
+from bot.download import lifecycle, restore
 from bot.download import manager as download_manager
 
 # 会话健康检查：连续失败达到阈值就重启连接。
@@ -40,7 +41,7 @@ async def session_monitor():
             failures = 0
             # 连接正常就唤醒冷驻留任务（自动重试轮次用尽后保留断点等在这里）
             try:
-                await download_manager.wake_cold_holds()
+                await lifecycle.wake_cold_holds()
             except Exception:
                 logging.exception("唤醒冷驻留下载任务失败")
             continue
@@ -74,7 +75,7 @@ async def main():
     logging.warning("Starting download manager...")
     manager = asyncio.create_task(download_manager.run())
     try:
-        await download_manager.restore_saved_queue()
+        await restore.restore_saved_queue()
     except Exception:
         logging.exception("恢复上次下载队列失败")
     try:
