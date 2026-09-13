@@ -197,9 +197,9 @@ async def enqueue_file(
     filename = resolve_filename(message, override, use_caption_name=use_caption_name)
     directory = os.path.join(base_dir, subfolder) if subfolder else base_dir
     filename = unique_filename(filename, directory, used_names if used_names is not None else set())
-    rel_filename = f"{subfolder}/{filename}" if subfolder else filename
+    # directory 已含 subfolder，相对路径直接拼文件名；再拼一次会把相册套进同名子文件夹
     rel_dir = os.path.relpath(directory, BASE_FOLDER).replace(os.sep, "/").strip("/")
-    rel = f"{rel_dir}/{rel_filename}" if rel_dir and rel_dir != "." else rel_filename
+    rel = f"{rel_dir}/{filename}" if rel_dir and rel_dir != "." else filename
     real_file = os.path.join(directory, filename)
     target = reply_to or message
     if any(item.id == message.id or item.filename == rel for item in downloads):

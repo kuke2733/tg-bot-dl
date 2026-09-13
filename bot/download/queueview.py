@@ -7,10 +7,12 @@ from pathlib import Path
 from pyrogram.enums import ParseMode
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from bot.app import app
 from bot.download import manager
 from bot.download.manager import (
     active_batches,
     active_downloads,
+    delete_message_later,
     downloads,
     handle_stop_single,
     safe_edit,
@@ -21,6 +23,9 @@ from bot.download.types import Batch
 from bot.util import clip_button_text, humanReadableSize
 
 QUEUE_MAX_ROWS = 50
+# 定位消息存留时间（秒）：足够点引用跳转，随后自动删除
+PROGRESS_POINTER_LIFETIME = 15.0
+PROGRESS_POINTER_TEXT = "⬆️ 上面就是这条任务的下载进度，点本条消息顶部的引用即可跳转，稍后自动删除。"
 
 
 def _download_queue_line(download) -> str:
@@ -37,6 +42,14 @@ def _batch_queue_line(batch: Batch) -> str:
     return f"{icon} 📁 `{clip_button_text(batch.folder, 60)}`（完成 {batch.done}/{total}）"
 
 
+def _goto_button(target: Message | None) -> InlineKeyboardButton | None:
+    """进度消息的定位按钮；拿不到所在会话就不给按钮。"""
+    chat_id = target.chat.id if target is not None and target.chat else None
+    if chat_id is None:
+        return None
+    return InlineKeyboardButton("📍 进度", callback_data=f"qgoto {chat_id} {target.id}")
+
+
 def render_queue() -> tuple[str, InlineKeyboardMarkup | None]:
     running = [
         download
@@ -50,7 +63,7 @@ def render_queue() -> tuple[str, InlineKeyboardMarkup | None]:
         if download.batch is None and not download.stopped and download.id not in stop
     ]
 
-    rows: list[tuple[str, InlineKeyboardButton]] = []
+    rows: list[tuple[str, InlineKeyboardButton | None, InlineKeyboardButton | None]] = []
     for download in running:
         name = Path(download.filename).name
         rows.append(
@@ -59,6 +72,7 @@ def render_queue() -> tuple[str, InlineKeyboardMarkup | None]:
                 InlineKeyboardButton(
                     f"⏹ {clip_button_text(name)}", callback_data=f"qstop {download.id}"
                 ),
+                _goto_button(download.progress_message),
             )
         )
     for batch in batches:
@@ -68,6 +82,7 @@ def render_queue() -> tuple[str, InlineKeyboardMarkup | None]:
                 InlineKeyboardButton(
                     f"⏹ {clip_button_text(batch.folder)}", callback_data=f"qstopb {batch.id}"
                 ),
+                _goto_button(batch.message),
             )
         )
     for download in queued:
@@ -78,6 +93,7 @@ def render_queue() -> tuple[str, InlineKeyboardMarkup | None]:
                 InlineKeyboardButton(
                     f"⏹ {clip_button_text(name)}", callback_data=f"qstop {download.id}"
                 ),
+                _goto_button(download.progress_message),
             )
         )
 
@@ -88,10 +104,10 @@ def render_queue() -> tuple[str, InlineKeyboardMarkup | None]:
 
     shown = rows[:QUEUE_MAX_ROWS]
     lines = [f"📋 下载队列（共 {len(rows)} 个任务）" + ("  ⏸ 已暂停" if manager.paused else "")]
-    lines += [line for line, _ in shown]
+    lines += [line for line, _, _ in shown]
     if len(rows) > QUEUE_MAX_ROWS:
         lines.append(f"…还有 {len(rows) - QUEUE_MAX_ROWS} 个任务未显示")
-    keyboard = [[button] for _, button in shown]
+    keyboard = [[cancel, goto] if goto else [cancel] for _, cancel, goto in shown]
     keyboard.append([InlineKeyboardButton("🔄 刷新", callback_data="qref")])
     return "\n".join(lines), InlineKeyboardMarkup(keyboard)
 
@@ -120,6 +136,9 @@ async def handle_queue_stop_batch(callback: CallbackQuery, batch_id: str) -> Non
         await callback.answer("该批次已结束")
     else:
         await callback.answer("正在停止...")
+        # 先打上停止标记再刷新面板：后台任务还没跑到置位那一步时，
+        # 这一帧渲染仍会把该批次画出来，看起来就像面板没刷新
+        target.stopped = True
         asyncio.create_task(_stop_batch_in_background(target))
     if callback.message is not None:
         await refresh_queue_message(callback.message)
@@ -131,11 +150,31 @@ async def handle_queue_refresh(callback: CallbackQuery) -> None:
         await refresh_queue_message(callback.message)
 
 
+async def handle_queue_goto(callback: CallbackQuery, chat_id: int, message_id: int) -> None:
+    """在进度消息下方发一条带引用的定位消息，点引用即可跳转，几秒后自动删除。"""
+    try:
+        pointer = await app.send_message(
+            chat_id,
+            PROGRESS_POINTER_TEXT,
+            reply_to_message_id=message_id,
+            parse_mode=ParseMode.DISABLED,
+        )
+    except Exception:
+        logging.debug("发送进度定位消息失败", exc_info=True)
+        await callback.answer("进度消息已失效，可能已被删除")
+        return
+    await callback.answer("已发出定位消息，点它的引用跳转")
+    asyncio.create_task(delete_message_later(pointer, PROGRESS_POINTER_LIFETIME))
+
+
 async def handle_queue_callback(callback: CallbackQuery) -> None:
     data = callback.data or ""
     if data.startswith("qstopb "):
         await handle_queue_stop_batch(callback, data.split(" ", 1)[1])
     elif data.startswith("qstop "):
         await handle_queue_stop(callback, int(data.split()[-1]))
+    elif data.startswith("qgoto "):
+        _, chat_id, message_id = data.split()
+        await handle_queue_goto(callback, int(chat_id), int(message_id))
     elif data == "qref":
         await handle_queue_refresh(callback)
