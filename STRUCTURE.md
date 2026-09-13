@@ -75,6 +75,73 @@ python start.py
 
 网页只负责配置和开关。真正收消息、下文件的是 `bot/`。
 
+## 业务架构总览
+
+```mermaid
+flowchart TB
+    subgraph ENTRY["用户与入口"]
+        direction TB
+        U["管理员 / 用户（Telegram 私聊）<br/>发命令 · 点按钮 · 发文件/链接"]
+        CH["被监听频道（公开/私有）<br/>新帖：媒体 + 文案"]
+        BR["管理员浏览器<br/>Web 面板"]
+    end
+
+    subgraph ACCESS["接入层"]
+        direction TB
+        BOT["机器人账号 app<br/>命令与按钮回调 · 吞帖器 · 面板消息"]
+        USER["用户账号 user<br/>收频道新帖 · 健康探测<br/>全部媒体 MTProto 下载（≤4GiB）"]
+        PANEL["Web 面板 Flask + supervisor<br/>配置即时生效 · 启停进程（硬杀）· 日志"]
+    end
+
+    subgraph BIZ["业务模块"]
+        direction TB
+        CMD["命令与菜单 commands.py<br/>/start /add /use /pause /resume /help"]
+        LIS["频道监听 listener.py<br/>六层广告过滤 · 每频道聚合摘要"]
+        FB["文件管理 filebrowser.py<br/>/files 删目录联动取消占用"]
+        RUN["健康自愈 run.py<br/>60s 会话检查 · 假死重启连接 · 唤醒冷驻留"]
+        NTF["通知 notify.py<br/>版本更新 / 磁盘满 → 管理员"]
+    end
+
+    subgraph ENGINE["下载引擎 bot/download"]
+        direction TB
+        ENQ["入队链路 handler · groups · names<br/>相册防抖 · 命名 · 查重询问"]
+        MGR["队列调度 manager.py<br/>并发6 · /pause 出队闸 · 进度/批次消息 · 停止看门狗"]
+        TRF["分片传输 transfer.py<br/>1MB分片 → .temp 断点 · 短重试×6<br/>FloodWait×10 · ENOSPC · 坏断点归零"]
+        HOLD["可靠性驻留（断点与记录保留）<br/>retry_holds 5/15/30/60分钟×4轮<br/>cold_holds ❄️等连接恢复 · disk_holds 等/resume"]
+        SUP["持久化与支撑<br/>persist 落盘/启动恢复 · store 去重<br/>cleanup 清理 · queueview /queue 渲染"]
+    end
+
+    U -->|命令/点击| BOT
+    CH -->|新帖| USER
+    BR -->|HTTP| PANEL
+    BOT --> CMD
+    BOT --> FB
+    USER --> LIS
+    CMD -->|入队| ENQ
+    LIS -->|过滤后入队| ENQ
+    ENQ --> MGR
+    MGR --> TRF
+    TRF -->|短周期耗尽 / ENOSPC| HOLD
+    HOLD -->|到点/唤醒/释放 重新入队| MGR
+    RUN -->|健康检查通过·唤醒| HOLD
+    MGR --> SUP
+    SUP -->|queue.json 等| CFG["config/<br/>queue.json · listening.json · downloads.sqlite · 会话"]
+    TRF -->|成品 / .temp| DATA["data/<br/>成品 · 频道文件夹 · .temp 断点"]
+
+    classDef cbot fill:#dbeafe,stroke:#2563eb
+    classDef cuser fill:#dcfce7,stroke:#16a34a
+    classDef cweb fill:#ede9fe,stroke:#7c3aed
+    classDef corange fill:#ffedd5,stroke:#ea580c
+    classDef csky fill:#e0f2fe,stroke:#0284c7
+    class BOT cbot
+    class USER cuser
+    class PANEL cweb
+    class TRF corange
+    class HOLD csky
+```
+
+分层看：接入层是双账号分工——机器人只管交互（另有吞帖器防止频道帖被误当私聊文件），媒体一律由用户账号走 MTProto 下载；业务模块提供命令、监听过滤、文件管理与自愈（通知 notify.py 把版本更新/磁盘满发给管理员）；下载引擎由「可靠性驻留」和「持久化支撑」兜底——断点与任务记录在任何自动中断下都保留，连接恢复后自动唤醒续传；成品与断点落在 `data/`，任务与配置落在 `config/`。
+
 ## 根目录文件
 
 | 文件 | 作用 |
@@ -142,6 +209,57 @@ python start.py
 
 1. 直接把文件发给机器人 → 用机器人客户端 `app`
 2. `/add 消息链接` 下载禁止转发的内容 → 用用户客户端 `user`（需要手机号登录）
+
+## 下载任务生命周期
+
+一个任务只有三种结局：**完成**、**⛔ 已停止（全删）**、**❌ 判死清理（源消息已删）**；其余一切失败都会回到「下载中」继续。
+
+```mermaid
+stateDiagram-v2
+    state "已入队（queue.json 落盘）" as queued
+    state "下载中（.temp 分片）" as dl
+    state "完成（大小校验 → 哈希查重）" as done
+    state "短周期重试（退避×6 · FloodWait×10）" as retry
+    state "长周期重排（5/15/30/60分钟 ×4轮）" as longretry
+    state "❄️ 冷驻留（断点+记录永久保留）" as cold
+    state "💾 磁盘满驻留（暂停队列+通知）" as diskfull
+    state "⛔ 已停止·全删（有意不恢复）" as stopped
+    state "❌ 判死清理（源消息已删）" as dead
+
+    [*] --> queued: 发文件 / 链接
+    queued --> dl: 出队
+    dl --> done: 下载完成
+    done --> [*]
+    dl --> retry: 传输失败
+    retry --> dl: 续传
+    retry --> longretry: 6 次耗尽
+    longretry --> dl: 到点重排
+    longretry --> cold: 4 轮用尽
+    cold --> dl: 健康检查通过·唤醒
+    cold --> dead: 唤醒时源消息已删
+    dead --> [*]
+    dl --> stopped: 手动停止（任何入口）
+    longretry --> stopped: 驻留中停止
+    cold --> stopped: 驻留中停止
+    dl --> diskfull: ENOSPC
+    diskfull --> dl: /resume（空间已清）
+    stopped --> [*]
+
+    note right of cold
+        天级断网恢复后自动续传
+        跨进程重启 = 重置轮次、重新获得整轮重试
+    end note
+    note left of queued
+        进程重启/硬杀 → queue.json 启动恢复
+        .temp 自动生效
+    end note
+```
+
+- **短周期重试**：进程内指数退避 6 次，FloodWait 单算 10 次，引用失效自动刷新；`.temp` 断点一直在。
+- **长周期重排**：5/15/30/60 分钟 ×4 轮，断点与 `queue.json` 记录保留，进程重启照常恢复。
+- **冷驻留**：4 轮用尽不判死，等会话健康检查（60 秒一次）通过自动唤醒——天级断网（如代理挂两天）恢复后自动续传，无需人工干预。
+- **磁盘写满**：单独驻留并自动暂停队列、通知管理员，清理空间后 `/resume` 释放。
+- **手动「停止」= 放弃任务**：删除成品、`.temp` 与记录，有意不提供恢复。
 
 ## config/ 和 data/
 

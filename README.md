@@ -7,7 +7,7 @@
 
 一个基于 [Pyrogram] MTProto 框架开发的 **Telegram 文件下载机器人**。无需持续开启 Telegram 客户端或使用复杂的 CLI 工具，即可直接将 Telegram 中的文件（最高支持单文件 **4GB**）高速下载到你的服务器或本地存储中。
 
-项目里每个文件的职责见 [STRUCTURE.md](STRUCTURE.md)。
+项目里每个文件的职责与业务架构图（Mermaid）见 [STRUCTURE.md](STRUCTURE.md)。
 
 ---
 

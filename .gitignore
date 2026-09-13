@@ -17,6 +17,7 @@ venv/
 .DS_Store
 Thumbs.db
 .zcode/
+TEST-GUIDE.md
 config/queue.json
 config/listening.json
 config/last_version
