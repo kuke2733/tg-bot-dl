@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 from pyrogram.enums import ParseMode
@@ -11,6 +12,10 @@ from bot.version import APP_NAME, VERSION
 
 # 上次运行记录的版本号：与当前版本不一致就给管理员发一条更新提示
 LAST_VERSION_PATH = Path(CONFIG_FOLDER) / "last_version"
+
+# 磁盘满通知的节流：并发任务接连撞上时只发一条
+DISK_FULL_NOTIFY_INTERVAL = 60.0
+_last_disk_full_notify = 0.0
 
 
 def _save(version: str) -> None:
@@ -50,3 +55,23 @@ async def notify_version_update() -> None:
         return
     logging.warning("已通知管理员程序更新：%s -> %s", last, VERSION)
     _save(VERSION)
+
+
+async def notify_disk_full(filename: str) -> None:
+    global _last_disk_full_notify
+    now = time.monotonic()
+    if now - _last_disk_full_notify < DISK_FULL_NOTIFY_INTERVAL:
+        return
+    _last_disk_full_notify = now
+    admin = await _admin_chat()
+    if admin is None:
+        logging.warning("磁盘已满但管理员会话不可用，无法通知")
+        return
+    try:
+        await app.send_message(
+            admin,
+            f"💾 磁盘已满：{filename} 的下载已暂停并保留断点。清理空间后发 /resume 继续。",
+            parse_mode=ParseMode.DISABLED,
+        )
+    except Exception:
+        logging.warning("发送磁盘满通知失败", exc_info=True)

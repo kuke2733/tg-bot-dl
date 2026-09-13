@@ -288,5 +288,8 @@ async def pauseQueue(_, message: Message):
 
 async def resumeQueue(_, message: Message):
     """恢复下载队列"""
-    download_manager.set_paused(False)
-    await message.reply("已恢复，排队中的任务会继续下载。")
+    released = download_manager.set_paused(False)
+    text = "已恢复，排队中的任务会继续下载。"
+    if released:
+        text += f"磁盘满驻留的 {released} 个任务已重新排队。"
+    await message.reply(text)

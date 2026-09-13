@@ -38,6 +38,11 @@ async def session_monitor():
                 # 用户账号承担收帖和下载，会话假死同样要发现并重启
                 await asyncio.wait_for(user.get_me(), timeout=SESSION_CHECK_TIMEOUT)
             failures = 0
+            # 连接正常就唤醒冷驻留任务（自动重试轮次用尽后保留断点等在这里）
+            try:
+                await download_manager.wake_cold_holds()
+            except Exception:
+                logging.exception("唤醒冷驻留下载任务失败")
             continue
         except FloodWait:
             failures = 0  # 能收到限流响应，说明连接本身是通的

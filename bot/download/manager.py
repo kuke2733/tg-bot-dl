@@ -30,7 +30,12 @@ from bot.download.store import (
     init as init_store,
     remember,
 )
-from bot.download.transfer import download_with_resume
+from bot.download.transfer import (
+    DownloadExhausted,
+    download_with_resume,
+    prepare_temp_file,
+    temp_path_for,
+)
 from bot.download.types import Batch, BatchItem, Download
 from bot.util import humanReadableSize, humanReadableTime
 
@@ -43,6 +48,14 @@ active_batches: dict[str, Batch] = {}
 active_downloads: list[Download] = []
 # /pause 暂停出队（进行中的继续），/resume 恢复
 paused = False
+# 短周期重试耗尽后的长周期自动重试：间隔递增，最多 len(LONG_RETRY_DELAYS) 轮
+LONG_RETRY_DELAYS = (5 * 60, 15 * 60, 30 * 60, 60 * 60)
+# 等待下一轮自动重试的任务（记录保留在 queue.json，进程重启照常恢复）
+retry_holds: list[Download] = []
+# 磁盘写满驻留的任务，等 /resume 释放
+disk_holds: list[Download] = []
+# 自动重试轮次用尽后的冷驻留：断点与记录一直保留，连接恢复后由会话监控唤醒
+cold_holds: list[Download] = []
 # 下载事件回调（如频道监听的摘要），签名 (kind, info)
 download_event_listeners: list = []
 # 进度消息 / 原消息 id -> 仍可改名的下载任务
@@ -81,6 +94,7 @@ STATUS_MARK = {
     "duplicate": "⚠️",
     "skipped": "⏭",
     "content_duplicate": "⚠️",
+    "cold": "❄️",
 }
 
 ITEM_STATUS_LABEL = {
@@ -92,6 +106,7 @@ ITEM_STATUS_LABEL = {
     "duplicate": "重复",
     "skipped": "已跳过",
     "content_duplicate": "内容重复",
+    "cold": "等待网络恢复",
 }
 
 
@@ -114,9 +129,31 @@ def find_rename_target(message_id: int) -> Download | None:
     return rename_targets.get(message_id)
 
 
-def set_paused(value: bool) -> None:
+def set_paused(value: bool) -> int:
     global paused
     paused = value
+    if value:
+        return 0
+    return release_disk_holds()
+
+
+def release_disk_holds() -> int:
+    """磁盘满驻留的任务随 /resume 重新排队，从断点继续；返回释放的数量。"""
+    if not disk_holds:
+        return 0
+    released = list(disk_holds)
+    disk_holds.clear()
+    count = 0
+    for download in released:
+        if download.stopped or download.id in stop or (download.batch and download.batch.stopped):
+            asyncio.create_task(abort_held_download(download))
+            continue
+        requeue_held(download)
+        count += 1
+        logging.info("磁盘空间恢复，重新排队：%s", download.filename)
+    if count:
+        logging.warning("磁盘空间恢复，%d 个驻留任务重新排队", count)
+    return count
 
 
 def emit_download_event(kind: str, info: dict) -> None:
@@ -450,7 +487,7 @@ def batch_keyboard(batch: Batch) -> InlineKeyboardMarkup | None:
                 InlineKeyboardButton("仍要下载", callback_data=f"bdupc {batch.id}"),
             ]
         )
-    has_downloads = any(item.status in {"waiting", "downloading"} for item in batch.items)
+    has_downloads = any(item.status in {"waiting", "downloading", "cold"} for item in batch.items)
     if has_downloads and not batch.stopped:
         rows.append([InlineKeyboardButton("停止全部", callback_data=f"stopb {batch.id}")])
     if not rows:
@@ -614,6 +651,10 @@ def find_download_by_id(download_id: int) -> Download | None:
     for item in downloads:
         if item.id == download_id:
             return item
+    for held in (retry_holds, disk_holds, cold_holds):
+        for item in held:
+            if item.id == download_id:
+                return item
     return None
 
 
@@ -658,6 +699,237 @@ async def handle_stopped_download(download: Download, item: BatchItem | None, sa
         await finish_batch_item(download.batch)
         return
     await finalize_single_stopped(download, save_path)
+
+
+def _remove_hold(download: Download) -> None:
+    for held in (retry_holds, disk_holds, cold_holds):
+        if download in held:
+            held.remove(download)
+
+
+def requeue_held(download: Download) -> None:
+    """把驻留任务重新入队（断点还在磁盘上，run 循环 1 秒内接手）。"""
+    _remove_hold(download)
+    download.will_requeue = False
+    download.started = 0.0
+    download.last_update = 0.0
+    download.ui_seq += 1
+    queue_download(download)
+
+
+async def abort_held_download(download: Download) -> None:
+    """驻留任务按已停止收尾：清断点、删记录、消息交代。
+
+    停止按钮、批次停止、等待唤醒都可能触发收尾；hold_aborted 保证只收一次。
+    """
+    if download.hold_aborted:
+        return
+    download.hold_aborted = True
+    _remove_hold(download)
+    _pop_stop(download.id)
+    save_path = str(Path(BASE_FOLDER) / download.filename)
+    try:
+        queue_persist.remove_task(queue_persist.task_record(download)["key"])
+    except Exception:
+        logging.exception("移除持久化任务失败：%s", download.filename)
+    if download.batch:
+        cleanup_partial_download(save_path, download.filename)
+        return
+    await finalize_single_stopped(download, save_path)
+
+
+async def stop_held_download(download: Download) -> None:
+    """停止驻留中的任务：终止定时等待并按已停止收尾。
+
+    收尾由这里负责，不依赖被取消协程的 except 分支——任务尚未启动就被
+    cancel() 时协程体根本不会执行。
+    """
+    mark_download_stopped(download)
+    if download.retry_task is not None and not download.retry_task.done():
+        download.retry_task.cancel()
+    await abort_held_download(download)
+
+
+async def handle_download_exhausted(
+    download: Download, item: BatchItem | None, exc: DownloadExhausted
+) -> None:
+    """短周期重试耗尽：保留 .temp 断点，安排下一轮长周期自动重试；轮次用尽按失败收尾。"""
+    save_path = str(Path(BASE_FOLDER) / download.filename)
+    if download.stopped or download.id in stop or (download.batch and download.batch.stopped):
+        await handle_stopped_download(download, item, save_path)
+        return
+    if download.retry_round >= len(LONG_RETRY_DELAYS):
+        # 轮次用尽不判死：转入冷驻留。断点与记录保留，连接恢复后由会话监控唤醒重试
+        download.will_requeue = True
+        cold_holds.append(download)
+        if item:
+            item.status = "cold"
+            item.started = 0.0
+        logging.warning(
+            "下载 %s 自动重试 %d 轮未成功，转入冷驻留（断点保留），连接恢复后自动继续",
+            download.filename,
+            download.retry_round,
+        )
+        if download.batch:
+            await refresh_batch(download.batch, force=True)
+        else:
+            await safe_edit(
+                download.progress_message,
+                f"`{download.filename}`：\n__❄️ {len(LONG_RETRY_DELAYS)} 次自动重试未成功，"
+                "已保留断点、暂停重试；连接恢复后会自动继续。__",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=stop_keyboard(download.id),
+                important=True,
+            )
+        return
+    download.will_requeue = True
+    download.retry_round += 1
+    delay = max(LONG_RETRY_DELAYS[download.retry_round - 1], int(exc.wait or 0))
+    resumed = prepare_temp_file(temp_path_for(save_path))
+    logging.warning(
+        "下载 %s 短周期重试耗尽（%s，已下载 %s），%s 后进行第 %d/%d 次自动重试",
+        download.filename,
+        type(exc).__name__,
+        humanReadableSize(resumed),
+        humanReadableTime(int(delay)),
+        download.retry_round,
+        len(LONG_RETRY_DELAYS),
+    )
+    if item:
+        item.status = "waiting"
+        item.started = 0.0
+    if download.batch:
+        await refresh_batch(download.batch, force=True)
+    else:
+        await safe_edit(
+            download.progress_message,
+            f"`{download.filename}`：\n__⏳ 第 {download.retry_round}/{len(LONG_RETRY_DELAYS)} 次自动重试将在 "
+            f"{humanReadableTime(int(delay))} 后开始，已下载 {humanReadableSize(resumed)}，断点已保留。__",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=stop_keyboard(download.id),
+            important=True,
+        )
+    retry_holds.append(download)
+    download.retry_task = asyncio.create_task(_long_retry_wait(download, delay))
+
+
+async def refetch_source_message(download: Download) -> Message | None:
+    """重取源消息拿新引用。
+
+    网络等原因取不到时沿用内存里的原引用（返回原消息）；
+    调用成功但消息为空/无媒体，说明源消息已被删除，返回 None。
+    """
+    chat = download.from_message.chat if download.from_message is not None else None
+    if chat is None:
+        return download.from_message
+    try:
+        fetched = await download.client.get_messages(chat.id, [download.id])
+    except Exception:
+        logging.warning("刷新源消息失败，沿用原引用：%s", download.filename, exc_info=True)
+        return download.from_message
+    refreshed = fetched[0] if fetched else None
+    if refreshed is not None and not getattr(refreshed, "empty", False) and refreshed.media:
+        return refreshed
+    return None
+
+
+def _source_gone(source: Message | None) -> bool:
+    return source is None or getattr(source, "empty", False) or not source.media
+
+
+async def fail_source_deleted(download: Download) -> None:
+    """源消息已被删除：终态失败收尾（清断点、删记录、消息交代）。"""
+    logging.warning("源消息不存在或已删除：%s", download.filename)
+    _remove_hold(download)
+    download.will_requeue = False
+    try:
+        queue_persist.remove_task(queue_persist.task_record(download)["key"])
+    except Exception:
+        logging.exception("移除持久化任务失败：%s", download.filename)
+    cleanup_partial_download(str(Path(BASE_FOLDER) / download.filename), download.filename)
+    await handle_download_failure(download, resolve_batch_item(download), note="源消息已删除")
+
+
+async def _long_retry_wait(download: Download, delay: float) -> None:
+    try:
+        await asyncio.sleep(delay)
+    except asyncio.CancelledError:
+        # 等待期间被用户停止：stop_held_download 发起的取消由这里收尾
+        await abort_held_download(download)
+        return
+    _remove_hold(download)
+    download.retry_task = None
+    if download.stopped or download.id in stop or (download.batch and download.batch.stopped):
+        await abort_held_download(download)
+        return
+    source = await refetch_source_message(download)
+    if _source_gone(source):
+        await fail_source_deleted(download)
+        return
+    download.from_message = source
+    requeue_held(download)
+    logging.info("下载 %s 进入第 %d 次自动重试", download.filename, download.retry_round)
+
+
+async def wake_cold_holds() -> int:
+    """连接恢复（会话健康检查通过）后唤醒冷驻留任务：确认源消息还在，再重新排队续传。
+
+    返回唤醒数量；唤醒后的任务若再一次短周期耗尽，会直接回到冷驻留等下次唤醒。
+    """
+    if not cold_holds:
+        return 0
+    woke = 0
+    for download in list(cold_holds):
+        if download.stopped or download.id in stop or (download.batch and download.batch.stopped):
+            await abort_held_download(download)
+            continue
+        source = await refetch_source_message(download)
+        if _source_gone(source):
+            await fail_source_deleted(download)
+            continue
+        download.from_message = source
+        requeue_held(download)
+        woke += 1
+    if woke:
+        logging.warning("连接恢复，唤醒 %d 个冷驻留任务继续下载", woke)
+    return woke
+
+
+async def handle_disk_full(download: Download, item: BatchItem | None) -> None:
+    """磁盘写满：保留断点、暂停队列并通知管理员，等 /resume 恢复。"""
+    save_path = str(Path(BASE_FOLDER) / download.filename)
+    if download.stopped or download.id in stop or (download.batch and download.batch.stopped):
+        await handle_stopped_download(download, item, save_path)
+        return
+    download.will_requeue = True
+    disk_holds.append(download)
+    set_paused(True)
+    resumed = prepare_temp_file(temp_path_for(save_path))
+    logging.warning(
+        "磁盘已满：%s 已下载 %s，保留断点并暂停队列，等 /resume 恢复",
+        download.filename,
+        humanReadableSize(resumed),
+    )
+    if item:
+        item.status = "waiting"
+        item.started = 0.0
+    if download.batch:
+        await refresh_batch(download.batch, force=True)
+    else:
+        await safe_edit(
+            download.progress_message,
+            "__💾 磁盘已满，断点已保留、队列已暂停；清理空间后发 /resume 继续。__",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=stop_keyboard(download.id),
+            important=True,
+        )
+    try:
+        # 局部导入避免 notify→listener→manager 的模块环
+        from bot import notify
+
+        await notify.notify_disk_full(download.filename)
+    except Exception:
+        logging.debug("磁盘满通知发送失败", exc_info=True)
 
 
 async def start_download_progress(download: Download, item: BatchItem | None) -> None:
@@ -905,6 +1177,12 @@ async def downloadFile(download: Download) -> None:
 
         await finish_download_success(download, item, result)
 
+    except DownloadExhausted as exc:
+        # 短周期重试耗尽：保留断点转入长周期自动重试；磁盘满走单独通道
+        if exc.disk_full:
+            await handle_disk_full(download, item)
+        else:
+            await handle_download_exhausted(download, item, exc)
     except asyncio.CancelledError:
         # 停止看门狗强制中断：按已停止收尾，确保临时文件被清理、消息有交代
         logging.warning("下载 %s 被强制中断，按已停止处理", download.filename)
@@ -922,10 +1200,12 @@ async def downloadFile(download: Download) -> None:
             active_downloads.remove(download)
         except ValueError:
             pass
-        try:
-            queue_persist.remove_task(queue_persist.task_record(download)["key"])
-        except Exception:
-            logging.exception("移除持久化任务失败：%s", download.filename)
+        if not download.will_requeue:
+            # 驻留等待自动重试/磁盘恢复期间保留记录，重启后照常恢复
+            try:
+                queue_persist.remove_task(queue_persist.task_record(download)["key"])
+            except Exception:
+                logging.exception("移除持久化任务失败：%s", download.filename)
         unregister_rename_target(download)
         untrack_unique(download.unique_id)
         running -= 1
@@ -1117,6 +1397,10 @@ async def stop_batch_now(target: Batch) -> None:
     for item in list(rename_targets.values()):
         if item.batch and item.batch.id == target.id:
             mark_download_stopped(item)
+    for waiter in list(retry_holds) + list(disk_holds) + list(cold_holds):
+        # 驻留中的批次成员（等自动重试/磁盘恢复/冷驻留）也要一并停止并清除记录
+        if waiter.batch and waiter.batch.id == target.id:
+            await stop_held_download(waiter)
     for batch_item in target.items:
         if batch_item.status in {"waiting", "downloading"}:
             batch_item.status = "stopped"
@@ -1155,8 +1439,12 @@ async def handle_stop_single(callback: CallbackQuery, download_id: int) -> None:
     if target.stopped:
         await callback.answer("已停止")
         return
-    mark_download_stopped(target)
     await callback.answer("正在停止...")
+    if target in retry_holds or target in disk_holds or target in cold_holds:
+        # 驻留中（等自动重试/磁盘恢复/冷驻留）：终止等待并按停止收尾
+        await stop_held_download(target)
+        return
+    mark_download_stopped(target)
     if target.batch is None and target.task is None:
         # 排队中还没开始传输：出队顺序可能排在几个大任务之后，立即收尾，别让消息干等
         await finalize_queued_stopped(target)

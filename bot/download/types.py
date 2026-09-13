@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pyrogram.client import Client
 from pyrogram.types import Message
 
-UNFINISHED_STATUS = {"waiting", "downloading", "duplicate"}
+UNFINISHED_STATUS = {"waiting", "downloading", "duplicate", "cold"}
 SUCCESS_STATUS = {"done", "content_duplicate"}
 FAILED_STATUS = {"failed", "stopped", "deleted"}
 
@@ -81,3 +81,10 @@ class Download:
     task: asyncio.Task | None = None
     finalizing: bool = False
     cancel_scheduled: bool = False
+    # 短周期重试耗尽后的长周期自动重试：已完成轮数与等待定时任务
+    retry_round: int = 0
+    retry_task: asyncio.Task | None = None
+    # True 时 downloadFile 收尾保留 queue.json 记录（驻留等待自动重试/磁盘恢复期间）
+    will_requeue: bool = False
+    # 驻留任务收尾单飞标记：停止/唤醒多条路径并发时只收尾一次
+    hold_aborted: bool = False
