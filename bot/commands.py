@@ -11,7 +11,7 @@ from pyrogram.handlers.message_handler import MessageHandler
 from pyrogram.types import BotCommand, Message
 
 from bot.app import DL_FOLDER, user
-from bot import folder, sysinfo
+from bot import folder, listener, sysinfo
 from bot.download import handler as download_handler
 from bot.download import manager as download_manager
 from bot.download import queueview
@@ -96,7 +96,15 @@ def register(app: Client):
     addCommand(app, addByLink, "add")
     addCommand(app, showQueue, "queue")
     addCommand(app, listFiles, "files")
+    addCommand(app, pauseQueue, "pause")
+    addCommand(app, resumeQueue, "resume")
+    addCommand(app, listener.listen, "listen")
+    addCommand(app, listener.unlisten, "unlisten")
+    addCommand(app, listener.listening, "listening")
     app.add_handler(MessageHandler(onIncomingMessage), group=-100)
+    # 频道监听要先于 addFile 的媒体处理器注册：同一组内先匹配先执行，
+    # 频道帖由监听接管，避免 addFile 往频道里回「你不是管理员」。
+    listener.register(app)
     app.add_handler(
         MessageHandler(checkAdmins(download_handler.addFile), document | media)
     )
@@ -149,6 +157,11 @@ async def set_menu(app: Client):
             BotCommand("add", "通过链接下载文件"),
             BotCommand("queue", "查看下载队列"),
             BotCommand("files", "管理已下载文件"),
+            BotCommand("pause", "暂停接收新任务"),
+            BotCommand("resume", "恢复下载队列"),
+            BotCommand("listen", "监听频道自动下载"),
+            BotCommand("unlisten", "停止监听频道"),
+            BotCommand("listening", "查看监听的频道"),
         ]
     )
 
@@ -240,3 +253,15 @@ async def showQueue(_, message: Message):
     """查看下载队列，可取消任务"""
     text, markup = queueview.render_queue()
     await message.reply(text, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
+
+
+async def pauseQueue(_, message: Message):
+    """暂停接收新的下载任务"""
+    download_manager.set_paused(True)
+    await message.reply("已暂停：排队中的任务不会开始，进行中的会继续下完。发 /resume 恢复。")
+
+
+async def resumeQueue(_, message: Message):
+    """恢复下载队列"""
+    download_manager.set_paused(False)
+    await message.reply("已恢复，排队中的任务会继续下载。")

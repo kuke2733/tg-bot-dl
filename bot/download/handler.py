@@ -8,7 +8,7 @@ from pyrogram.enums.parse_mode import ParseMode
 from pyrogram.types import InlineKeyboardMarkup, Message
 
 from bot import folder
-from bot.app import app, user
+from bot.app import BASE_FOLDER, app, user
 from bot.download.groups import MediaGroupCollector
 from bot.download import persist as queue_persist
 from bot.download.manager import (
@@ -25,13 +25,13 @@ from bot.download.manager import (
     rename_targets,
     safe_edit,
     unique_duplicate_keyboard,
+    emit_download_event,
 )
 from bot.download.names import (
     album_folder_name,
     extract_rename_name,
     media_file_size,
     media_file_unique_id,
-    relative_name,
     replace_filename,
     resolve_filename,
     sanitize_folder_name,
@@ -160,6 +160,7 @@ def _make_download(
     unique_id: str,
     batch: Batch | None,
     batch_item: BatchItem | None,
+    quiet: bool = False,
 ) -> Download:
     return Download(
         client=client,
@@ -172,6 +173,7 @@ def _make_download(
         batch=batch,
         batch_item=batch_item,
         unique_id=unique_id,
+        quiet=quiet,
     )
 
 
@@ -185,20 +187,28 @@ async def enqueue_file(
     used_names: set[str] | None = None,
     batch: Batch | None = None,
     progress_seed: Message | None = None,
+    base: str | None = None,
+    quiet: bool = False,
+    notice_chat_id: int | None = None,
 ) -> None:
     if not override and batch is None:
         override = take_pending_rename(_chat_id(reply_to or message))
+    base_dir = base if base is not None else folder.get()
     filename = resolve_filename(message, override, use_caption_name=use_caption_name)
-    directory = os.path.join(folder.get(), subfolder) if subfolder else folder.get()
+    directory = os.path.join(base_dir, subfolder) if subfolder else base_dir
     filename = unique_filename(filename, directory, used_names if used_names is not None else set())
     rel_filename = f"{subfolder}/{filename}" if subfolder else filename
-    rel = relative_name(rel_filename)
+    rel_dir = os.path.relpath(directory, BASE_FOLDER).replace(os.sep, "/").strip("/")
+    rel = f"{rel_dir}/{rel_filename}" if rel_dir and rel_dir != "." else rel_filename
     real_file = os.path.join(directory, filename)
     target = reply_to or message
     if any(item.id == message.id or item.filename == rel for item in downloads):
         logging.debug("跳过重复任务：%s %s", message.id, rel)
         if batch is None:
-            await _status_message(target, f"文件 `{rel}` 已在下载队列中。", progress_seed)
+            if quiet:
+                emit_download_event("skipped", {"filename": rel, "reason": "已在下载队列", "quiet": True, "chat_id": _chat_id(message)})
+            else:
+                await _status_message(target, f"文件 `{rel}` 已在下载队列中。", progress_seed)
         return
 
     size = media_file_size(message)
@@ -212,9 +222,12 @@ async def enqueue_file(
         logging.warning("下载前命中重复：%s unique_id=%s", rel, unique_id)
         if batch is not None:
             download = _make_download(
-                message, client, rel, batch.message, size, unique_id, batch, batch_item
+                message, client, rel, batch.message, size, unique_id, batch, batch_item, quiet
             )
             mark_batch_unique_duplicate(download)
+            return
+        if quiet:
+            emit_download_event("skipped", {"filename": rel, "reason": "重复文件", "quiet": True, "chat_id": _chat_id(message)})
             return
         download = _make_download(message, client, rel, target, size, unique_id, None, None)
         token = register_unique_prompt(download)
@@ -232,23 +245,33 @@ async def enqueue_file(
         if batch_item is not None:
             batch_item.status = "done"
             return
+        if quiet:
+            emit_download_event("skipped", {"filename": rel, "reason": "文件已存在", "quiet": True, "chat_id": _chat_id(message)})
+            return
         await _status_message(target, f"文件 `{rel}` 已经存在。", progress_seed)
         return
 
     if batch is None:
         size_text = f"（{humanReadableSize(size)}）" if size else ""
         logging.warning("收到文件，加入下载队列：%s %s unique_id=%s", rel, size_text, unique_id or "-")
-        progress = await _status_message(
-            target,
-            f"文件 `{rel}` 已加入下载队列{size_text}。",
-            progress_seed,
-        )
+        if quiet:
+            progress = await app.send_message(
+                notice_chat_id,
+                f"📥 `{rel}`{size_text}",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        else:
+            progress = await _status_message(
+                target,
+                f"文件 `{rel}` 已加入下载队列{size_text}。",
+                progress_seed,
+            )
     else:
         logging.warning("收到文件，加入下载队列：%s unique_id=%s", rel, unique_id or "-")
         progress = batch.message
 
     queue_download(
-        _make_download(message, client, rel, progress, size, unique_id, batch, batch_item)
+        _make_download(message, client, rel, progress, size, unique_id, batch, batch_item, quiet)
     )
 
 
@@ -258,10 +281,13 @@ async def enqueue_messages(
     reply_to: Message | None = None,
     override: str | None = None,
     notice: Message | None = None,
+    base: str | None = None,
+    quiet: bool = False,
+    notice_chat_id: int | None = None,
 ) -> None:
     messages = [message for message in messages if message and message.media]
     if not messages:
-        if notice is not None and reply_to is not None:
+        if not quiet and notice is not None and reply_to is not None:
             await _status_message(reply_to, "这条链接对应的消息里没有文件。", notice)
         return
     if not override:
@@ -274,27 +300,40 @@ async def enqueue_messages(
             override=override,
             use_caption_name=True,
             progress_seed=notice,
+            base=base,
+            quiet=quiet,
+            notice_chat_id=notice_chat_id,
         )
         return
 
+    base_dir = base if base is not None else folder.get()
     folder_name = sanitize_folder_name(override) if override else album_folder_name(messages)
     if not folder_name:
         folder_name = album_folder_name([])
-    subfolder = unique_folder(folder_name)
-    summary = (
-        f"这一组 {len(messages)} 个文件将保存到文件夹 `{subfolder}`，"
-        "下载进度会在这条消息里更新。\n"
-        "回复本条消息可修改文件夹名称。"
-    )
-    target = reply_to or messages[0]
-    status = await _status_message(target, summary, notice)
+    subfolder = unique_folder(folder_name, base_dir)
+    if quiet:
+        target = None
+        status = await app.send_message(
+            notice_chat_id,
+            f"📥 相册 `{subfolder}`（{len(messages)} 个文件）",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    else:
+        summary = (
+            f"这一组 {len(messages)} 个文件将保存到文件夹 `{subfolder}`，"
+            "下载进度会在这条消息里更新。\n"
+            "回复本条消息可修改文件夹名称。"
+        )
+        target = reply_to or messages[0]
+        status = await _status_message(target, summary, notice)
 
     batch = Batch(
         id=str(getattr(messages[0], "media_group_id", messages[0].id)),
         folder=subfolder,
         total=len(messages),
         message=status,
-        directory=os.path.join(folder.get(), subfolder),
+        directory=os.path.join(base_dir, subfolder),
+        quiet=quiet,
     )
     active_batches[batch.id] = batch
     queue_persist.add_batch(queue_persist.batch_record(batch))
@@ -309,6 +348,9 @@ async def enqueue_messages(
             use_caption_name=False,
             used_names=used_names,
             batch=batch,
+            base=base,
+            quiet=quiet,
+            notice_chat_id=notice_chat_id,
         )
     await refresh_batch(batch, force=True)
 

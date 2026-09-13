@@ -40,7 +40,7 @@ class MediaGroupCollector:
         self._pending: dict[int | str, PendingGroup] = {}
         self._lock = asyncio.Lock()
 
-    async def add(self, message: Message, client, on_ready) -> bool:
+    async def add(self, message: Message, client, on_ready, quiet: bool = False) -> bool:
         group_id = getattr(message, "media_group_id", None)
         if not group_id:
             return False
@@ -48,11 +48,14 @@ class MediaGroupCollector:
         async with self._lock:
             pending = self._pending.get(group_id)
             if pending is None:
-                notice = await client.send_message(
-                    message.chat.id,
-                    "收到一组文件，正在整理...",
-                    reply_to_message_id=message.id,
-                )
+                if quiet:
+                    notice = None
+                else:
+                    notice = await client.send_message(
+                        message.chat.id,
+                        "收到一组文件，正在整理...",
+                        reply_to_message_id=message.id,
+                    )
                 pending = PendingGroup(messages=[message], notice=notice)
                 pending.token = object()
                 pending.task = asyncio.create_task(

@@ -290,8 +290,8 @@ def album_folder_name(messages: list[Message]) -> str:
     return datetime.now().strftime("相册_%Y-%m-%d_%H-%M-%S")
 
 
-def unique_folder(name: str) -> str:
-    base = folder.get()
+def unique_folder(name: str, base: str | None = None) -> str:
+    base = base if base is not None else folder.get()
     candidate = name
     index = 2
     while os.path.exists(os.path.join(base, candidate)):

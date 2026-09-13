@@ -30,6 +30,7 @@ class Batch:
     directory: str = ""
     last_update: float = 0.0
     stopped: bool = False
+    quiet: bool = False
     items: list[BatchItem] = field(default_factory=list)
     pending_unique: list[Download] = field(default_factory=list)
 
@@ -74,6 +75,8 @@ class Download:
     ui_seq: int = 0
     unique_id: str = ""
     skip_hash_check: bool = False
+    # 频道自动下载的安静模式：不与频道交互、结果走摘要、完成后删临时消息
+    quiet: bool = False
     # 正在执行的下载任务；停止后超时会被强制取消
     task: asyncio.Task | None = None
     finalizing: bool = False

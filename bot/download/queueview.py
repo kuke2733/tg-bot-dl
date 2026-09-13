@@ -7,6 +7,7 @@ from pathlib import Path
 from pyrogram.enums import ParseMode
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from bot.download import manager
 from bot.download.manager import (
     active_batches,
     active_downloads,
@@ -81,10 +82,12 @@ def render_queue() -> tuple[str, InlineKeyboardMarkup | None]:
         )
 
     if not rows:
+        if manager.paused:
+            return "⏸ 下载队列已暂停，发 /resume 恢复。", None
         return "当前没有排队或进行中的下载任务。", None
 
     shown = rows[:QUEUE_MAX_ROWS]
-    lines = [f"📋 下载队列（共 {len(rows)} 个任务）"]
+    lines = [f"📋 下载队列（共 {len(rows)} 个任务）" + ("  ⏸ 已暂停" if manager.paused else "")]
     lines += [line for line, _ in shown]
     if len(rows) > QUEUE_MAX_ROWS:
         lines.append(f"…还有 {len(rows) - QUEUE_MAX_ROWS} 个任务未显示")

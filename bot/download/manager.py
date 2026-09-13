@@ -41,6 +41,10 @@ stop: list[int] = []
 active_batches: dict[str, Batch] = {}
 # 正在执行 downloadFile 的任务；还在排队的任务只出现在 downloads 里
 active_downloads: list[Download] = []
+# /pause 暂停出队（进行中的继续），/resume 恢复
+paused = False
+# 下载事件回调（如频道监听的摘要），签名 (kind, info)
+download_event_listeners: list = []
 # 进度消息 / 原消息 id -> 仍可改名的下载任务
 rename_targets: dict[int, Download] = {}
 
@@ -108,6 +112,35 @@ def unregister_rename_target(download: Download) -> None:
 
 def find_rename_target(message_id: int) -> Download | None:
     return rename_targets.get(message_id)
+
+
+def set_paused(value: bool) -> None:
+    global paused
+    paused = value
+
+
+def emit_download_event(kind: str, info: dict) -> None:
+    for callback in list(download_event_listeners):
+        try:
+            callback(kind, info)
+        except Exception:
+            logging.exception("下载事件回调失败")
+
+
+def _event_info(download: Download) -> dict:
+    chat_id = None
+    if download.from_message is not None and download.from_message.chat is not None:
+        chat_id = download.from_message.chat.id
+    return {"filename": download.filename, "quiet": download.quiet, "chat_id": chat_id}
+
+
+async def delete_message_later(message, delay: float = 10.0) -> None:
+    """安静模式的临时进度消息：展示一小段时间后删除，结果已进频道摘要。"""
+    await asyncio.sleep(delay)
+    try:
+        await message.delete()
+    except Exception as exc:
+        logging.debug("删除临时消息失败：%s: %s", type(exc).__name__, exc)
 
 
 def new_token() -> str:
@@ -337,16 +370,17 @@ async def run() -> None:
     global running
     init_store()
     while True:
-        for download in list(downloads):
-            if running == MAX_SIMULTANEOUS_TRANSMISSIONS:
-                break
-            if download not in downloads:
-                continue
-            downloads.remove(download)
-            active_downloads.append(download)
-            download.task = asyncio.create_task(downloadFile(download))
-            logging.info("New download initialized: %s", download.filename)
-            running += 1
+        if not paused:
+            for download in list(downloads):
+                if running == MAX_SIMULTANEOUS_TRANSMISSIONS:
+                    break
+                if download not in downloads:
+                    continue
+                downloads.remove(download)
+                active_downloads.append(download)
+                download.task = asyncio.create_task(downloadFile(download))
+                logging.info("New download initialized: %s", download.filename)
+                running += 1
         try:
             await asyncio.sleep(1)
         except asyncio.CancelledError:
@@ -508,6 +542,8 @@ async def finish_batch_item(batch: Batch) -> None:
             logging.debug("无法删除空文件夹：%s", directory, exc_info=True)
     if active_batches.pop(batch.id, None) is not None:
         queue_persist.remove_batch(batch.id)
+    if batch.quiet and batch.message is not None:
+        asyncio.create_task(delete_message_later(batch.message))
 
 
 def mark_download_stopped(download: Download) -> None:
@@ -560,6 +596,9 @@ async def finalize_single_stopped(download: Download, save_path: str) -> None:
     _pop_stop(download.id)
     cleanup_partial_download(save_path, download.filename)
     await safe_edit(download.progress_message, STOPPED_TEXT, parse_mode=ParseMode.MARKDOWN, important=True)
+    if download.quiet:
+        asyncio.create_task(delete_message_later(download.progress_message))
+    emit_download_event("stopped", _event_info(download))
 
 
 async def handle_stopped_download(download: Download, item: BatchItem | None, save_path: str) -> None:
@@ -655,6 +694,18 @@ async def finish_download_success(download: Download, item: BatchItem | None, re
     actual_size = Path(result).stat().st_size if Path(result).exists() else (
         download.expected_size or download.size
     )
+
+    # 完成校验：实际大小与 Telegram 报的大小不一致视为失败
+    if result and download.expected_size and Path(result).exists() and actual_size != download.expected_size:
+        logging.warning(
+            "下载完成校验失败：%s 预期 %d 字节，实际 %d 字节",
+            download.filename, download.expected_size, actual_size,
+        )
+        cleanup_partial_download(result, download.filename)
+        note = f"大小不符（预期 {humanReadableSize(download.expected_size)}，实际 {humanReadableSize(actual_size)}），已删除"
+        await handle_download_failure(download, item, note=note)
+        return
+
     speed = humanReadableSize(actual_size / seconds_took)
     time_took = humanReadableTime(int(seconds_took))
     success_text = success_text_for(download, actual_size, time_took, speed)
@@ -667,6 +718,22 @@ async def finish_download_success(download: Download, item: BatchItem | None, re
 
     if sha256 and not download.skip_hash_check and find_by_sha256(sha256):
         logging.warning("下载后内容重复：%s sha256=%s", download.filename, sha256[:12])
+        if download.quiet:
+            if item:
+                item.status = "content_duplicate"
+                item.name = Path(download.filename).name
+            if download.batch:
+                await finish_batch_item(download.batch)
+            else:
+                await safe_edit(
+                    download.progress_message,
+                    f"`{download.filename}` 与历史下载内容相同，已保留。",
+                    parse_mode=ParseMode.MARKDOWN,
+                    important=True,
+                )
+                asyncio.create_task(delete_message_later(download.progress_message))
+            emit_download_event("duplicate_keep", _event_info(download))
+            return
         await prompt_hash_duplicate(download, result, sha256, success_text)
         return
 
@@ -679,6 +746,7 @@ async def finish_download_success(download: Download, item: BatchItem | None, re
             item.received = actual_size
             item.total = actual_size
         await finish_batch_item(download.batch)
+        emit_download_event("done", _event_info(download) | {"size": actual_size})
         return
 
     await safe_edit(
@@ -687,6 +755,9 @@ async def finish_download_success(download: Download, item: BatchItem | None, re
         parse_mode=ParseMode.MARKDOWN,
         important=True,
     )
+    if download.quiet:
+        asyncio.create_task(delete_message_later(download.progress_message))
+    emit_download_event("done", _event_info(download) | {"size": actual_size})
 
 
 def apply_pending_rename_on_disk(download: Download, result_path: str) -> tuple[str, str]:
@@ -712,18 +783,24 @@ def apply_pending_rename_on_disk(download: Download, result_path: str) -> tuple[
     return result_path, download.filename
 
 
-async def handle_download_failure(download: Download, item: BatchItem | None) -> None:
+async def handle_download_failure(download: Download, item: BatchItem | None, note: str = "") -> None:
     if item:
         item.status = "failed"
     if download.batch:
         await finish_batch_item(download.batch)
     else:
+        text = f"文件 `{download.filename}` 下载失败。"
+        if note:
+            text = f"文件 `{download.filename}` 下载失败：{note}"
         await safe_edit(
             download.progress_message,
-            f"文件 `{download.filename}` 下载失败。",
+            text,
             parse_mode=ParseMode.MARKDOWN,
             important=True,
         )
+        if download.quiet:
+            asyncio.create_task(delete_message_later(download.progress_message))
+    emit_download_event("failed", _event_info(download) | ({"note": note} if note else {}))
 
 
 async def downloadFile(download: Download) -> None:
@@ -1006,6 +1083,8 @@ async def stop_batch_now(target: Batch) -> None:
     for batch_item in target.items:
         batch_item.status = "deleted"
     await safe_edit(target.message, STOPPED_TEXT, parse_mode=ParseMode.MARKDOWN, important=True)
+    if target.quiet and target.message is not None:
+        asyncio.create_task(delete_message_later(target.message))
     if active_batches.pop(target.id, None) is not None:
         queue_persist.remove_batch(target.id)
 
