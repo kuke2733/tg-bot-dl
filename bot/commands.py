@@ -5,10 +5,11 @@ from urllib.parse import urlparse
 
 from pyrogram.client import Client
 from pyrogram.enums import ParseMode
+from pyrogram import filters
 from pyrogram.filters import command, document, media, text
 from pyrogram.handlers.callback_query_handler import CallbackQueryHandler
 from pyrogram.handlers.message_handler import MessageHandler
-from pyrogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from pyrogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardMarkup
 
 from bot import callbacks
 from bot.app import DL_FOLDER, user
@@ -83,6 +84,24 @@ def parse_message_link(raw: str):
     return username, int(parts[-1])
 
 
+# 常驻回复键盘：点按钮等于发对应文本，由 keyboardDispatch 转给处理函数
+KB_LABELS = ("📋 队列", "📂 文件", "📡 监听", "💾 磁盘")
+REPLY_KEYBOARD = ReplyKeyboardMarkup(
+    [[KB_LABELS[0], KB_LABELS[1]], [KB_LABELS[2], KB_LABELS[3]]],
+    resize_keyboard=True,
+    is_persistent=True,
+    placeholder="发文件给我下载，或点下面的按钮",
+)
+KB_FILTER = filters.regex("^(📋 队列|📂 文件|📡 监听|💾 磁盘)$")
+KB_ACTIONS: dict = {}
+
+
+async def keyboardDispatch(app: Client, message: Message):
+    handler = KB_ACTIONS.get((message.text or "").strip())
+    if handler:
+        await handler(app, message)
+
+
 def register(app: Client):
     addCommand(app, start, "start")
     addCommand(app, addByLink, "add")
@@ -104,6 +123,15 @@ def register(app: Client):
     app.add_handler(
         MessageHandler(checkAdmins(download_handler.addFile), document | media)
     )
+    kb_actions = {
+        "📋 队列": showQueue,
+        "📂 文件": listFiles,
+        "📡 监听": listener.listening,
+        "💾 磁盘": usage,
+    }
+    KB_ACTIONS.clear()
+    KB_ACTIONS.update(kb_actions)
+    app.add_handler(MessageHandler(checkAdmins(keyboardDispatch), KB_FILTER))
     app.add_handler(
         MessageHandler(checkAdmins(download_handler.renameFromText), text)
     )
@@ -185,6 +213,17 @@ async def start(_, message: Message):
             ]
         ),
     )
+    # 回复键盘必须附着在某条消息上才能送达客户端；发一条静默消息带上键盘后
+    # 立刻删除，聊天里不留痕，客户端侧的键盘会常驻。新会话发一次 /start 即有。
+    try:
+        note = await message.reply(
+            "⌨️",
+            reply_markup=REPLY_KEYBOARD,
+            disable_notification=True,
+        )
+        await note.delete()
+    except Exception:
+        logging.warning("常驻键盘未能随 /start 下发", exc_info=True)
 
 
 async def handle_menu_callback(callback: CallbackQuery) -> None:
