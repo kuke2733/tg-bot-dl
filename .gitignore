@@ -9,7 +9,6 @@ config/*.session-journal
 config/*.sqlite
 
 data/*
-!data/.gitkeep
 
 .env
 .venv/

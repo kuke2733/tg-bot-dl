@@ -102,13 +102,6 @@ def media_file_unique_id(message: Message) -> str:
     return str(getattr(media, "file_unique_id", "") or "")
 
 
-def relative_name(filename: str) -> str:
-    path = folder.getPath().replace("\\", "/").strip("/")
-    if not path or path == ".":
-        return filename
-    return f"{path}/{filename}"
-
-
 def has_extension(filename: str) -> bool:
     return len(os.path.splitext(filename)[1]) > 1
 

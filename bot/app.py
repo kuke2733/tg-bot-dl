@@ -1,5 +1,4 @@
 import logging
-import sys
 from os import getenv, mkdir
 from pathlib import Path
 
