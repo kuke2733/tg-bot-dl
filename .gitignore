@@ -20,3 +20,4 @@ Thumbs.db
 .zcode/
 config/queue.json
 config/listening.json
+config/last_version

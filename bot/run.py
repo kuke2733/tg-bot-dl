@@ -6,6 +6,7 @@ from pyrogram.errors import FloodWait
 
 from bot.app import app, user
 from bot import commands
+from bot import notify
 from bot.download import manager as download_manager
 
 # 会话健康检查：连续失败达到阈值就重启连接。
@@ -68,6 +69,10 @@ async def main():
         await download_manager.restore_saved_queue()
     except Exception:
         logging.exception("恢复上次下载队列失败")
+    try:
+        await notify.notify_version_update()
+    except Exception:
+        logging.exception("版本更新提示流程失败")
     monitor = asyncio.create_task(session_monitor())
     me = await app.get_me()
     logging.warning("Bot started! I'm @%s", me.username)
