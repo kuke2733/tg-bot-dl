@@ -33,7 +33,7 @@ async def send_restore_message(chat_id: int, text: str, reply_to: int | None):
 
 
 async def restore_saved_queue() -> None:
-    """进程重启后恢复上次未完成的下载任务（配合 .temp 断点续传）。"""
+    """进程重启后恢复上次未完成的下载任务，配合 .temp 断点续传。"""
     batches, tasks = queue_persist.load()
     if not tasks and not batches:
         return
@@ -117,7 +117,7 @@ async def _restore_task(key: str, record: dict, rebuilt: dict[str, Batch]) -> bo
         return False
     save_path = str(Path(BASE_FOLDER) / filename)
     if (Path(BASE_FOLDER) / filename).exists():
-        logging.warning("恢复跳过：文件已存在（可能中断前刚完成）：%s", filename)
+        logging.warning("恢复跳过：文件已存在，可能中断前刚完成：%s", filename)
         return False
     from bot.app import user
 
@@ -170,7 +170,7 @@ async def _restore_task(key: str, record: dict, rebuilt: dict[str, Batch]) -> bo
         if notice_chat is None:
             logging.warning("恢复跳过：缺少进度消息位置：%s", filename)
             return False
-        # 源媒体消息和恢复提示在同一个会话（私聊下载）时带上引用；频道任务的源在频道里，不能跨会话引用
+        # 源媒体消息和恢复提示在同一个会话时带上引用，私聊下载就是这种情况；频道任务的源在频道里，不能跨会话引用
         reply_to = message_id if chat_id == notice_chat else None
         download.progress_message = await send_restore_message(
             notice_chat,

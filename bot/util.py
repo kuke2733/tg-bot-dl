@@ -84,7 +84,7 @@ def is_admin(message: Message) -> bool:
 
 
 def is_admin_user(user) -> bool:
-    """按用户对象判断管理员（回调点击者是 from_user，不是面板消息的发送者）。"""
+    """按用户对象判断管理员：回调点击者是 from_user，不是面板消息的发送者。"""
     allowed = _allowed_admin_tokens()
     if not allowed:
         return False
@@ -111,7 +111,7 @@ _admin_chat_id: int | None = None
 
 
 async def admin_chat() -> int | None:
-    """解析管理员会话（取 ADMINS 里第一个可用项），成功后缓存。"""
+    """解析管理员会话，取 ADMINS 里第一个可用项，成功后缓存。"""
     global _admin_chat_id
     if _admin_chat_id is not None:
         return _admin_chat_id

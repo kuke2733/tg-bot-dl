@@ -74,7 +74,7 @@ def release_disk_holds() -> int:
 
 
 def requeue_held(download: Download) -> None:
-    """把驻留任务重新入队（断点还在磁盘上，run 循环 1 秒内接手）。"""
+    """把驻留任务重新入队，断点还在磁盘上，run 循环 1 秒内接手。"""
     unhold(download)
     download.will_requeue = False
     download.started = 0.0
@@ -186,7 +186,7 @@ async def handle_download_exhausted(download: Download, item, exc: DownloadExhau
             item.status = "cold"
             item.started = 0.0
         logging.warning(
-            "下载 %s 自动重试 %d 轮未成功，转入冷驻留（断点保留），连接恢复后自动继续",
+            "下载 %s 自动重试 %d 轮未成功，转入冷驻留，断点保留，连接恢复后自动继续",
             download.filename,
             download.retry_round,
         )
@@ -236,7 +236,7 @@ async def handle_download_exhausted(download: Download, item, exc: DownloadExhau
 async def refetch_source_message(download: Download):
     """重取源消息拿新引用。
 
-    网络等原因取不到时沿用内存里的原引用（返回原消息）；
+    网络等原因取不到时沿用内存里的原引用，也就是返回原消息；
     调用成功但消息为空/无媒体，说明源消息已被删除，返回 None。
     """
     chat = download.from_message.chat if download.from_message is not None else None
@@ -258,7 +258,7 @@ def _source_gone(source) -> bool:
 
 
 async def fail_source_deleted(download: Download) -> None:
-    """源消息已被删除：终态失败收尾（清断点、删记录、消息交代）。"""
+    """源消息已被删除，按失败收尾：清断点、删记录、消息交代。"""
     logging.warning("源消息不存在或已删除：%s", download.filename)
     unhold(download)
     download.will_requeue = False
@@ -292,7 +292,7 @@ async def _long_retry_wait(download: Download, delay: float) -> None:
 
 
 async def wake_cold_holds() -> int:
-    """连接恢复（会话健康检查通过）后唤醒冷驻留任务：确认源消息还在，再重新排队续传。
+    """连接恢复，也就是会话健康检查通过后，唤醒冷驻留任务：确认源消息还在，再重新排队续传。
 
     返回唤醒数量；唤醒后的任务若再一次短周期耗尽，会直接回到冷驻留等下次唤醒。
     """
@@ -364,7 +364,7 @@ async def stop_batch_now(target: Batch) -> None:
         if item.batch and item.batch.id == target.id:
             mark_download_stopped(item)
     for waiter in held_in_batch(target.id):
-        # 驻留中的批次成员（等自动重试/磁盘恢复/冷驻留）也要一并停止并清除记录
+        # 驻留中的批次成员也要一并停止并清除记录
         await stop_held_download(waiter)
     for batch_item in target.items:
         if batch_item.status in {"waiting", "downloading"}:
@@ -406,7 +406,7 @@ async def handle_stop_single(callback: CallbackQuery, download_id: int) -> None:
         return
     await callback.answer("正在停止...")
     if target.id in holds:
-        # 驻留中（等自动重试/磁盘恢复/冷驻留）：终止等待并按停止收尾
+        # 驻留中：终止等待并按停止收尾
         await stop_held_download(target)
         return
     mark_download_stopped(target)

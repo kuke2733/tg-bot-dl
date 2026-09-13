@@ -2,11 +2,11 @@
 
 所有跨模块共享的内存状态集中在这里：排队/在途任务、批次、改名目标、
 驻留表、停止标记、查重在飞集合、事件回调列表。只放「数据 + 一两行的
-读写操作」，不含调度与消息编排（那些在 manager/batches/lifecycle）。
+读写操作」，不含调度与消息编排，那些在 manager/batches/lifecycle。
 
 约定：
-- 容器（列表/字典）在原对象上原地修改，from-import 共享安全；
-- 标量（paused/running 等）一律通过 `state.属性` 访问，禁止 from-import。
+- 容器，也就是列表和字典，在原对象上原地修改，from-import 共享安全；
+- 标量一律通过 state.属性 访问，禁止 from-import。
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from bot.download.types import Batch, BatchItem, Download, HoldReason
 downloads: list[Download] = []
 active_downloads: list[Download] = []
 stop: list[int] = []
-# /pause 暂停出队（进行中的继续），/resume 恢复
+# /pause 暂停出队，进行中的继续，/resume 恢复
 paused = False
 
 # ---- 批次 ----
@@ -52,7 +52,7 @@ class HashPrompt:
     prompt_message: object
 
 
-# ---- 下载事件回调（如频道监听的摘要），签名 (kind, info) ----
+# ---- 下载事件回调，签名是 (kind, info)，比如频道监听的摘要 ----
 download_event_listeners: list = []
 
 # 停止后等待传输协程自行退出的时间；断线重试等场景卡住不动就强制取消
@@ -202,7 +202,7 @@ def schedule_stop_watchdog(download: Download) -> None:
         task = download.task
         if task is not None and not task.done() and not download.finalizing:
             logging.warning(
-                "下载 %s 停止 %s 秒后仍在传输（可能卡在断线重试），强制中断",
+                "下载 %s 停止 %s 秒后仍在传输，可能卡在断线重试，强制中断",
                 download.filename,
                 STOP_CANCEL_GRACE,
             )
@@ -212,7 +212,7 @@ def schedule_stop_watchdog(download: Download) -> None:
 
 
 def path_in_use(rel_path: str) -> bool:
-    """文件是否正被下载任务占用（任务的目标文件，或它的 .temp 临时文件）。"""
+    """文件是否正被下载任务占用：目标文件本身，或它的 .temp 临时文件。"""
     base = Path(BASE_FOLDER)
     try:
         target = str((base / rel_path).resolve())

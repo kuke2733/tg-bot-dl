@@ -36,7 +36,7 @@ async def notify_version_update() -> None:
     if last == VERSION:
         return
     if not last:
-        # 首次运行（没有历史版本记录）：只记录，不算更新
+        # 首次运行，没有历史版本记录：只记录，不算更新
         logging.warning("首次运行，记录版本号 %s", VERSION)
         _save(VERSION)
         return

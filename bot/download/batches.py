@@ -1,6 +1,6 @@
 """批次/任务进度消息的编排：刷新、单条收尾、批次收尾、开始下载提示。
 
-依赖 state（共享注册表）与 render（文本与编辑），不感知下载协议。
+依赖 state 与 render，不感知下载协议。
 """
 from __future__ import annotations
 

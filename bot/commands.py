@@ -21,15 +21,15 @@ from bot.util import checkAdmins, is_admin_user
 LINK_HOSTS = {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}
 LINK_HELP = (
     "链接格式不对。请使用消息链接，例如：\n"
-    "`https://t.me/c/1234567890/123`（私有频道/群组）\n"
-    "`https://t.me/频道用户名/123`（公开频道/群组）"
+    "`https://t.me/c/1234567890/123` 私有频道或群组\n"
+    "`https://t.me/频道用户名/123` 公开频道或群组"
 )
 
 bot_help = """
 把文件发给我，就会下载到这台电脑里。
 
-【怎么改名】（不用写后缀，自动补）
-1. 转发时写上名字（先到名字、再到文件）
+【怎么改名】不用写后缀，会自动补
+1. 转发时写上名字，先名字、后文件
 2. 回复下载进度消息，发新名字
 3. 发文件时，在说明里写名字
 4. /add <链接> <名字>
@@ -215,7 +215,7 @@ async def botHelp(_, message: Message):
 
 
 async def addByLink(_, message: Message):
-    """用消息链接下载（可加名字：/add <链接> <名字>）"""
+    """用消息链接下载，可加名字：/add <链接> <名字>"""
     if not user:
         await message.reply("还没有配置用户账号，没法读取这类消息。")
         return
@@ -295,5 +295,5 @@ async def resumeQueue(_, message: Message):
     await message.reply(text)
 
 
-# —— 按钮回调注册（协议前缀与路由见 bot/callbacks.py）——
+# —— 按钮回调注册，协议前缀与路由见 bot/callbacks.py ——
 callbacks.on(callbacks.MENU)(handle_menu_callback)

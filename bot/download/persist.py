@@ -9,7 +9,7 @@ from bot.app import CONFIG_FOLDER, app, user
 from bot.download.types import Download
 
 # 未完成下载任务的持久化文件：入队即写入，任务结束即移除，
-# 进程被硬杀（面板停止/断电）后最多丢最后一秒内的入队。
+# 进程被硬杀，比如面板停止或断电，后最多丢最后一秒内的入队。
 QUEUE_PATH = Path(CONFIG_FOLDER) / "queue.json"
 
 _lock = threading.Lock()

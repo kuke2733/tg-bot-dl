@@ -328,7 +328,7 @@ def createProgress(client: Client):
     return progress
 
 
-# —— 按钮回调注册（协议前缀与路由见 bot/callbacks.py）——
+# —— 按钮回调注册，协议前缀与路由见 bot/callbacks.py ——
 
 
 async def _handle_stop_batch_cb(callback: CallbackQuery) -> None:

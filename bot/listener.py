@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import threading
+from functools import lru_cache
 from pathlib import Path
 
 from pyrogram import filters
@@ -17,7 +18,7 @@ from bot.app import ADMINS, BASE_FOLDER, CONFIG_FOLDER, app, user
 from bot.download.groups import MediaGroupCollector
 from bot.download.handler import enqueue_messages
 from bot.download.state import download_event_listeners as _dl_event_listeners
-from bot.download.names import media_file_size, sanitize_folder_name
+from bot.download.names import media_file_size, message_media, sanitize_folder_name
 from bot import util
 from bot.util import clip_button_text, humanReadableSize
 
@@ -32,6 +33,17 @@ DEFAULT_AD_KEYWORDS = [
     "兼职", "有偿", "福利", "充值", "代理", "招商", "秒杀", "优惠券", "全网最低",
     "上车", "进群", "内部群", "签约", "招募",
 ]
+
+# 广告正则规则，转换自 AzurLab/Tg-Ad-RegEx（MIT）并做过调优，直接在这里或
+# config/listening.json 编辑即可。主体词×修饰词组合命中才算广告，比单关键词误杀率低。
+DEFAULT_AD_REGEX = {
+    "combo_part1": "推广|引流|拉[人群裙]|[群裙]发|小群|[吸增加]粉|水军|活跃|(wz|僵尸|精准)粉|(批量小|非小|[买卖]|微信|QQ|支付宝|钉钉|公[众主]|陌陌|探探|红[书薯]|抖音|soul|灵魂)号|好友提取|企业微信|电[商销]|实名一条龙|股民|[博菠][彩菜]|盘口|亚博|棋牌|狗推|人事|兼职|招([人聘募]|代理)|[黑灰]产|件套|(黑|银行|信用)卡|对公|[账公个私开]户|卡[商王]|假钞|代[收付发]|洗[钱米]|漂白|资金|转账|usdt|[回收出](大量?)u|u商|套现|换汇|贷款|网贷|送货|跑分|社工|数据库|查[询人车房户档]|开房|定位|监听|人[鬼轨]|(苹果|iOS|企业)签名|火种|蓝标|(代)注册|莆田|手表|高仿|[一1][比对][一1]|水鬼|[赚搞][钱米]|租房|房源|暗网|共济会|军火|偷渡|暗杀|走私|毒品",
+    "combo_part2": "售|卖|收|详[情询]|面交|需要|有意|咨询|合作|[点加看找]我|点头像|dd|滴滴|联系|(?<![公隐])私(?![人服])|[v薇]信|[加\\+][vq薇]|真[人实]|实名|认证|筛选|解封|担保|专[业供]|精准|实力|高端|正规|独家|全球|全国同台|供应|大量|批发|[现有][货🔥]|货源|直出|安排|(?<![这那])个人|团队|工作室|[卡咔]接|[无免]押|押金|点位|[0-9冰]点|高价|免费(测试|试用)|出水|全新|原装|[一二三]手",
+    "independent": "^(dd|滴滴|签到)$|小哥哥.*在(不在|吗)|需要.*联系|[v薇]信|^加v|水路.*往返",
+    "suffix": "bat|cab|cmd|com|cpl|lzh|scr|uue|vbs|exe|msi|jar|lnk|ps1|hta|vbe|wsf|js",
+    "filename": "诈骗|菲律宾|柬埔寨|金边|缅甸|老挝|越南|印[度尼]|迪拜|自动跳转|视 *频|免 *费|下 *载|跳 *转|点 *击|打 *开|观 *看|片 *源|流畅|[精极] *品|进 *群|啪|开房|土 *豪|无 *套|内 *射|肛 *交|灌 *肠|鲍 *鱼|尤 *物|母 *狗|骚|嫩|SM|[幼呦] *童|母 *子|人 *兽|学 *生|监控|记录|拍下|现场|[全过]程|经过|详情|公安|警方|开枪|击毙|案件|证据|残忍|虐待|血腥|曝光|流出|公布|[男女]子|美女|夫妇|身份|身亡|死者|名单"
+}
+
 INVITE_LINK_RE = re.compile(r"t\.me/(?:joinchat/|\+)", re.I)
 URL_RE = re.compile(r"https?://", re.I)
 EXPLICIT_AD_MARKS = ("#广告", "【广告】", "[广告]", "（广告）", "(广告)")
@@ -56,7 +68,7 @@ class Digest:
         self.task: asyncio.Task | None = None
 
     def render(self) -> str:
-        return f"📡 {self.title}（自动下载）\n" + "\n".join(self.lines)
+        return f"📡 {self.title} · 自动下载\n" + "\n".join(self.lines)
 
 
 def load_config() -> None:
@@ -131,8 +143,48 @@ async def _flush_digest(d: Digest) -> None:
 
 # ---------- 广告过滤 ----------
 
-def looks_like_ad(message: Message, keywords: list[str]) -> str | None:
-    """命中返回原因，未命中返回 None。多层条件组合判定，降低误杀。"""
+def _media_file_name(message: Message) -> str:
+    media, _ = message_media(message)
+    return getattr(media, "file_name", "") or ""
+
+
+@lru_cache(maxsize=8)
+def _compiled_ad_regex(combo_part1: str, combo_part2: str, independent: str, suffix: str, filename: str):
+    combo = None
+    if combo_part1 and combo_part2:
+        combo = re.compile(
+            f"(?i:({combo_part1}).*({combo_part2})|({combo_part2}).*({combo_part1})|({independent}))"
+        )
+    suffix_re = re.compile(f"(?i:\\.({suffix})$)") if suffix else None
+    name_re = re.compile(f"(?i:{filename})") if filename else None
+    return combo, suffix_re, name_re
+
+
+def looks_like_ad(message: Message, keywords: list[str], rules: dict | None = None) -> str | None:
+    """命中返回原因，未命中返回 None。多层条件组合判定，降低误杀。
+
+    判定顺序：显式广告标记 → 上游组合规则，主体词×修饰词 → 可疑文件 → 关键词计数。
+    """
+    rules = rules or DEFAULT_AD_REGEX
+    fname = _media_file_name(message)
+    combo_re, suffix_re, name_re = _compiled_ad_regex(
+        rules.get("combo_part1", ""),
+        rules.get("combo_part2", ""),
+        rules.get("independent", ""),
+        rules.get("suffix", ""),
+        rules.get("filename", ""),
+    )
+    if combo_re is not None:
+        text0 = message.caption or message.text or ""
+        m = combo_re.search(text0) if text0 else None
+        if m:
+            hit = m.group(0)[:40].replace("\n", " ")
+            return "命中广告组合规则：" + hit
+    if suffix_re is not None and fname and suffix_re.search(fname):
+        return "可疑文件后缀：" + fname[:60]
+    if name_re is not None and fname and name_re.search(fname):
+        return "可疑文件名：" + fname[:60]
+
     text = message.caption or message.text or ""
     if not text:
         return None
@@ -158,7 +210,7 @@ PRIVATE_CHANNEL_LINK_RE = re.compile(
 
 
 def parse_listen_target(raw: str) -> str | int:
-    """/listen、/unlisten 的目标都接受：频道链接（公开/私有/邀请）、@用户名、裸用户名。"""
+    """/listen、/unlisten 的目标都接受：频道链接、邀请链接、@用户名、裸用户名，公开私有都行。"""
     text = (raw or "").strip().strip("<>")
     match = PRIVATE_CHANNEL_LINK_RE.match(text)
     if match:
@@ -171,7 +223,7 @@ def parse_listen_target(raw: str) -> str | int:
 async def _enqueue_channel_media(
     items: list[Message], chat_id: int, title: str, base_dir: str, admin: int
 ) -> None:
-    # 收到的消息来自用户会话，直接由用户账号下载（不受 20MiB 限制）
+    # 收到的消息来自用户会话，直接由用户账号下载，没有 20MiB 限制
     await enqueue_messages(
         items, user, base=base_dir, quiet=True, notice_chat_id=admin
     )
@@ -192,7 +244,7 @@ async def on_channel_post(_, message: Message) -> None:
 
 async def silence_channel_post(_, message: Message) -> None:
     """机器人侧吞掉频道帖：防止 addFile 把频道新帖当普通文件下载、往频道里回消息。
-    真正的监听收帖在用户账号侧（register_user_channel_handler）。"""
+    真正的监听收帖在用户账号侧，见 register_user_channel_handler。"""
 
 
 async def _handle_post(message: Message) -> None:
@@ -210,7 +262,7 @@ async def _handle_post(message: Message) -> None:
 
 
 async def _process_channel_post(message: Message, entry: dict) -> None:
-    """过滤并入队一条频道媒体帖（实时新帖与历史回填共用）。"""
+    """过滤并入队一条频道媒体帖，实时新帖与历史回填共用。"""
     chat = message.chat
     chat_id = chat.id
     title = entry.get("title") or chat.title or chat.username or str(chat_id)
@@ -220,16 +272,20 @@ async def _process_channel_post(message: Message, entry: dict) -> None:
     types = _effective(entry, "types") or DEFAULT_TYPES
     if kind not in types:
         digest_add(chat.id, title, f"⏭️ 跳过：类型 {kind} 不在白名单")
-        logging.info("频道监听跳过（类型）：%s %s", title, kind)
+        logging.info("频道监听跳过：类型过滤 %s %s", title, kind)
         return
     min_mb = float(_effective(entry, "min_size_mb") or 0)
     if size and size < min_mb * 1024 * 1024:
         digest_add(chat.id, title, f"⏭️ 跳过：大小 {humanReadableSize(size)} 低于下限 {min_mb:g} MiB")
-        logging.info("频道监听跳过（大小）：%s %s", title, kind)
+        logging.info("频道监听跳过：大小过滤 %s %s", title, kind)
         return
-    reason = looks_like_ad(message, _effective(entry, "ad_keywords") or DEFAULT_AD_KEYWORDS)
+    reason = looks_like_ad(
+        message,
+        _effective(entry, "ad_keywords") or DEFAULT_AD_KEYWORDS,
+        _effective(entry, "ad_regex") or DEFAULT_AD_REGEX,
+    )
     if reason:
-        digest_add(chat.id, title, f"⏭️ 跳过疑似广告（{reason}）")
+        digest_add(chat.id, title, f"⏭️ 跳过疑似广告：{reason}")
         logging.warning("频道监听跳过疑似广告：%s %s", title, reason)
         return
 
@@ -262,7 +318,7 @@ async def _process_channel_post(message: Message, entry: dict) -> None:
 
 
 def cancel_backfill(chat_id: int) -> None:
-    """取消该频道的历史回填任务（删除监听频道文件夹时调用）。"""
+    """取消该频道的历史回填任务，删除监听频道文件夹时调用。"""
     task = _backfill_tasks.pop(chat_id, None)
     if task is not None and not task.done():
         task.cancel()
@@ -277,8 +333,8 @@ def cancel_backfill_by_folder(folder: str) -> None:
 
 
 async def _backfill_history(chat_id: int, entry: dict, limit: int) -> None:
-    """监听建立后回填频道的历史媒体帖（limit=0 表示全部，负数关闭），
-    从最早的一条开始按顺序下载（走用户账号）。"""
+    """监听建立后回填频道的历史媒体帖，limit=0 全部、负数关闭，
+    从最早的一条开始按顺序下载，走用户账号。"""
     if user is None or limit < 0:
         return
     title = entry.get("title") or str(chat_id)
@@ -349,9 +405,9 @@ async def listen(_, message: Message):
             parse_mode=ParseMode.MARKDOWN,
         )
         return
-    # 监听与下载都走用户账号：账号必须加入频道（公开私有一样），机器人无需加入
+    # 监听与下载都走用户账号：账号必须加入频道，公开私有一样，机器人无需加入
     if user is None:
-        await message.reply("需先配置用户账号（PHONE_NUMBER）。")
+        await message.reply("需先配置用户账号 PHONE_NUMBER。")
         return
     target = parse_listen_target(parts[1])
 
@@ -370,7 +426,7 @@ async def listen(_, message: Message):
         await message.reply("群组暂不支持。")
         return
     try:
-        # get_chat_history 是异步生成器；能迭代（哪怕频道为空没有消息）就说明账号在频道里
+        # get_chat_history 是异步生成器；能迭代就说明账号在频道里，哪怕频道为空没有消息
         async for _ in user.get_chat_history(chat.id, limit=1):
             break
     except Exception:
@@ -379,8 +435,8 @@ async def listen(_, message: Message):
         return
     title = chat.title or chat.username or str(chat.id)
     folder_name = sanitize_folder_name(title) or f"channel_{chat.id}"
-    # 存一个可点击的频道链接，优先级：用户名链接 > 频道完整信息里的邀请链接（仅管理员可见）
-    # > 用户监听时自己提供的邀请链接（普通成员看不到频道的邀请链接，但他们手里有加入时用的那个）
+    # 存一个可点击的频道链接，优先级：用户名链接 > 频道完整信息里的邀请链接，仅管理员可见
+    # > 用户监听时自己提供的邀请链接；普通成员看不到频道的邀请链接，但他们手里有加入时用的那个
     if chat.username:
         link = f"https://t.me/{chat.username}"
     elif chat.invite_link:
@@ -427,8 +483,8 @@ async def listen(_, message: Message):
 
 
 async def _migrate_links() -> None:
-    """给旧版监听条目补存频道链接（/listen 存链接是后来加的）。
-    统一用用户账号解析（收帖本就在用户会话）；失败下次再试。"""
+    """给旧版监听条目补存频道链接，/listen 存链接是后来加的功能。
+    统一用用户账号解析，收帖本就在用户会话，失败下次再试。"""
     changed = False
     if user is None:
         return
@@ -453,7 +509,7 @@ async def _migrate_links() -> None:
 
 
 def _render_listening():
-    """渲染 /listening 面板：文本列表 + 每频道一行按钮（跳转 + 取消监听）。"""
+    """渲染 /listening 面板：文本列表，每频道一行按钮，跳转和取消监听。"""
     chats = _config.get("chats", {})
     if not chats:
         return "还没有监听任何频道，用 /listen 添加。", None
@@ -507,10 +563,10 @@ async def handle_unlisten_callback(callback: CallbackQuery) -> None:
 def register(client) -> None:
     load_config()
     # 机器人侧只"吞掉"频道帖：避免 addFile 把频道新帖当普通文件下载、往频道里回消息。
-    # 真正的收帖在用户账号侧（register_user_channel_handler）。
+    # 真正的收帖在用户账号侧，见 register_user_channel_handler。
     client.add_handler(MessageHandler(silence_channel_post, filters.channel))
     _dl_event_listeners.append(on_download_event)
-    logging.warning("频道监听已就绪：%d 个频道（收帖走用户账号）", len(_config.get("chats", {})))
+    logging.warning("频道监听已就绪：%d 个频道，收帖走用户账号", len(_config.get("chats", {})))
 
 
 def register_user_channel_handler(client) -> None:
@@ -519,5 +575,5 @@ def register_user_channel_handler(client) -> None:
     logging.warning("用户账号频道监听已就绪")
 
 
-# —— 按钮回调注册（协议前缀与路由见 bot/callbacks.py）——
+# —— 按钮回调注册，协议前缀与路由见 bot/callbacks.py ——
 callbacks.on(callbacks.UNLISTEN)(handle_unlisten_callback)

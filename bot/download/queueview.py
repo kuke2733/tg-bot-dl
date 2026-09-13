@@ -29,7 +29,7 @@ from bot.download.types import Batch
 from bot.util import clip_button_text, humanReadableSize
 
 QUEUE_MAX_ROWS = 50
-# 定位消息存留时间（秒）：足够点引用跳转，随后自动删除
+# 定位消息存留的秒数：足够点引用跳转，随后自动删除
 PROGRESS_POINTER_LIFETIME = 15.0
 PROGRESS_POINTER_TEXT = "⬆️ 上面是这条任务的下载进度，点引用跳转。"
 
@@ -202,7 +202,7 @@ async def handle_queue_goto(callback: CallbackQuery, chat_id: int, message_id: i
 
 
 async def handle_cancel_all(callback: CallbackQuery) -> None:
-    """一键取消：停止并清空所有排队与下载中的任务（含批次）。"""
+    """一键取消：停止并清空所有排队与下载中的任务，含批次。"""
     for batch in list(active_batches.values()):
         batch.stopped = True  # 面板即时隐藏该批次；文件清理在后台完成
         asyncio.create_task(_stop_batch_in_background(batch))
@@ -237,7 +237,7 @@ async def handle_queue_callback(callback: CallbackQuery) -> None:
         await handle_queue_refresh(callback)
 
 
-# —— 按钮回调注册（协议前缀与路由见 bot/callbacks.py）——
+# —— 按钮回调注册，协议前缀与路由见 bot/callbacks.py ——
 callbacks.on(callbacks.Q_STOP_BATCH)(handle_queue_callback)
 callbacks.on(callbacks.Q_STOP)(handle_queue_callback)
 callbacks.on(callbacks.Q_GOTO)(handle_queue_callback)

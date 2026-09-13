@@ -131,7 +131,7 @@ if PHONE_NUMBER:
         phone_number=PHONE_NUMBER,
         workdir=CONFIG_FOLDER,
         proxy=PROXY,
-        # 频道监听的新帖由用户账号接收，不能关更新（no_updates=True 会收不到任何消息）
+        # 频道监听的新帖由用户账号接收，不能关更新，no_updates=True 会收不到任何消息
         device_model=DEVICE_MODEL,
         app_version=APP_VERSION,
         max_concurrent_transmissions=MAX_SIMULTANEOUS_TRANSMISSIONS,

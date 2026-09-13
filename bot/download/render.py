@@ -1,4 +1,4 @@
-"""下载进度的纯文本渲染与消息编辑辅助（manager / queueview 共用）。
+"""下载进度的纯文本渲染与消息编辑辅助，manager 与 queueview 共用。
 
 只依赖 types 与 util，不感知调度逻辑；改文案、改进度条只动这里。
 """

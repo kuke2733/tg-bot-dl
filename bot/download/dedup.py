@@ -1,6 +1,6 @@
 """重复文件的交互处理：唯一 ID 拦截与内容哈希询问的弹窗与决策。
 
-入队前的唯一 ID 检查（state.is_unique_duplicate）在 handler 里调用；
+入队前的唯一 ID 检查在 handler 里调用，见 state.is_unique_duplicate；
 这里负责下载前/后的两次「取消还是继续」交互。
 """
 from __future__ import annotations
@@ -222,7 +222,7 @@ async def handle_hash_decision(callback: CallbackQuery, keep: bool) -> None:
     await safe_edit(prompt.prompt_message, text, parse_mode=ParseMode.MARKDOWN, important=True)
 
 
-# —— 按钮回调注册（协议前缀与路由见 bot/callbacks.py）——
+# —— 按钮回调注册，协议前缀与路由见 bot/callbacks.py ——
 
 
 async def _dup_continue_cb(callback: CallbackQuery) -> None:

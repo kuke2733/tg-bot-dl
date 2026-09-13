@@ -23,7 +23,7 @@ class Status(StrEnum):
 
 
 class HoldReason(StrEnum):
-    """任务驻留原因（驻留 = 暂不参与调度，但断点与 queue.json 记录保留）。"""
+    """任务驻留原因。驻留表示暂不参与调度，但断点与 queue.json 记录保留。"""
 
     RETRY = "retry"  # 等待下一轮长周期自动重试
     DISK = "disk"  # 磁盘写满，等 /resume 释放
@@ -134,7 +134,7 @@ class Download:
     # 短周期重试耗尽后的长周期自动重试：已完成轮数与等待定时任务
     retry_round: int = 0
     retry_task: asyncio.Task | None = None
-    # True 时 downloadFile 收尾保留 queue.json 记录（驻留等待自动重试/磁盘恢复期间）
+    # True 时 downloadFile 收尾保留 queue.json 记录，用于驻留等待自动重试或磁盘恢复期间
     will_requeue: bool = False
     # 驻留任务收尾单飞标记：停止/唤醒多条路径并发时只收尾一次
     hold_aborted: bool = False

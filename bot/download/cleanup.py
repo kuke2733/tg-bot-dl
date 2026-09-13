@@ -26,7 +26,7 @@ def _forget_record(file_path: Path) -> None:
 
 
 def cleanup_directory(directory: Path, folder: str) -> tuple[int, int]:
-    """清空并删除文件夹：每个条目都尝试删除（子目录整棵递归删），
+    """清空并删除文件夹：每个条目都尝试删除，子目录整棵递归删，
     不跳过任何条目；删不掉的计入剩余，交给后台重试清理。"""
     deleted = 0
     remaining = 0
@@ -93,7 +93,7 @@ def schedule_cleanup_retry(directory: str, folder: str) -> None:
 
 
 def schedule_file_cleanup_retry(save_path: str) -> None:
-    """单个残留下载文件（含 .temp）的后台重试清理。"""
+    """单个残留下载文件连同 .temp 的后台重试清理。"""
 
     async def retry() -> None:
         file_path = Path(save_path)
@@ -127,5 +127,5 @@ def cleanup_partial_download(save_path: str, filename: str) -> None:
             temp_path.unlink()
             logging.warning("已删除断点临时文件：%s.temp", filename)
     except OSError:
-        logging.warning("下载文件暂时无法删除（句柄未释放），稍后自动重试：%s", filename)
+        logging.warning("下载文件暂时无法删除，句柄未释放，稍后自动重试：%s", filename)
         schedule_file_cleanup_retry(save_path)

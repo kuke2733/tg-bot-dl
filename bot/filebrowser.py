@@ -142,7 +142,7 @@ def build_file_detail(view: FilesView, index: int) -> tuple[str, InlineKeyboardM
             "修改时间：" + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime))
         )
     except OSError:
-        lines.append("（读取文件信息失败）")
+        lines.append("读取文件信息失败")
     lines.append(f"位置：{view.display_path()}")
     keyboard = InlineKeyboardMarkup(
         [
@@ -187,7 +187,7 @@ async def edit_view(message: Message, text: str, markup: InlineKeyboardMarkup | 
     try:
         await message.edit(text, reply_markup=markup, parse_mode=ParseMode.DISABLED)
     except MessageNotModified:
-        pass  # 列表内容没变化（比如点了刷新），无需处理
+        pass  # 列表内容没变化，比如点了刷新，不用处理
     except Exception as exc:
         logging.debug("更新文件管理消息失败：%s: %s", type(exc).__name__, exc)
 
@@ -229,11 +229,11 @@ async def delete_entry(
 async def delete_current_dir(
     callback: CallbackQuery, message: Message, view: FilesView
 ) -> None:
-    """删除当前所在的子目录（含全部内容），并同步清理去重记录。
+    """删除当前所在的子目录，含全部内容，并同步清理去重记录。
     目录内有正在下载的文件时，先自动取消占用它的下载任务再删除。"""
     directory = view.abs_dir()
     base = Path(BASE_FOLDER)
-    # 先收集目录内全部文件的相对路径（自动取消收尾会删掉部分文件，之后再收集就漏了）
+    # 先收集目录内全部文件的相对路径；自动取消收尾会删掉部分文件，之后再收集就漏了
     record_paths = [
         p.relative_to(base).as_posix()
         for p in directory.rglob("*")
@@ -249,14 +249,14 @@ async def delete_current_dir(
 
     busy = busy_files()
     if busy:
-        # 自动取消占用该目录的下载任务（下载中的标记停止，排队中的立即收尾）
+        # 自动取消占用该目录的下载任务：下载中的标记停止，排队中的立即收尾
         for download in list(state.downloads) + list(state.active_downloads):
             rel = download.filename
             if rel in busy or f"{rel}.temp" in busy:
                 mark_download_stopped(download)
                 if download.task is None and download.batch is None:
                     await finalize_queued_stopped(download)
-        # 该目录是某个监听频道的文件夹时，一并中止它的历史回填（否则会立刻重建目录）
+        # 该目录是某个监听频道的文件夹时，一并中止它的历史回填，否则会立刻重建目录
         from bot import listener
 
         listener.cancel_backfill_by_folder(view.rel_dir)
@@ -302,7 +302,7 @@ async def handle_files_callback(callback: CallbackQuery) -> None:
         return
 
     if data == "deldir":
-        # 删除当前所在的子目录（根目录没有这个按钮，双保险再拦一次）
+        # 删除当前所在的子目录；根目录没有这个按钮，这里双保险再拦一次
         if not view.rel_dir:
             await callback.answer("根目录不能删除")
             return
@@ -323,7 +323,7 @@ async def handle_files_callback(callback: CallbackQuery) -> None:
     index = int(arg) if arg.isdigit() else -1
 
     if action == "fdeldir":
-        # 删除当前所在的子目录（根目录没有这个按钮，双保险再拦一次）
+        # 删除当前所在的子目录；根目录没有这个按钮，这里双保险再拦一次
         if not view.rel_dir:
             await callback.answer("根目录不能删除")
             return
@@ -385,5 +385,5 @@ async def listFiles(client: Client, message: Message):
     save_view(sent.id, view)
 
 
-# —— 按钮回调注册（协议前缀与路由见 bot/callbacks.py）——
+# —— 按钮回调注册，协议前缀与路由见 bot/callbacks.py ——
 callbacks.on(callbacks.FILES)(handle_files_callback)
