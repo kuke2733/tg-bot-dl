@@ -52,7 +52,7 @@ for handler in logging.root.handlers:
         except Exception:
             pass
 
-MAX_SIMULTANEOUS_TRANSMISSIONS = max(1, int(getenv("MAX_CONCURRENT_DOWNLOADS", "6") or "6"))
+MAX_SIMULTANEOUS_TRANSMISSIONS = max(1, int(getenv("MAX_CONCURRENT_DOWNLOADS", "3") or "3"))
 
 ADMINS = getenv('ADMINS', '').split()
 BOT_TOKEN = getenv('BOT_TOKEN')
