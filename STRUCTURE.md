@@ -28,6 +28,7 @@ tg-bot-dl/
 │   ├── run.py               机器人启动与退出
 │   ├── commands.py          /start /help 等命令和中文回复
 │   ├── folder.py            当前下载目录
+│   ├── filebrowser.py       /files 浏览和删除已下载的文件
 │   ├── sysinfo.py           磁盘空间信息
 │   ├── util.py              管理员校验、文件大小/时间格式化
 │   └── download/
@@ -107,9 +108,10 @@ python start.py
 | :--- | :--- |
 | `bot/app.py` | 读取环境变量和 `config/settings.env`，创建机器人客户端 `app`，如果填了手机号再创建用户客户端 `user`。代理也在这里生效。 |
 | `bot/version.py` | 应用名、版本号，以及上报给 Telegram 的设备信息。 |
-| `bot/run.py` | 启动顺序：注册命令 → 登录 → 启动下载队列 → 等待消息。 |
-| `bot/commands.py` | `/start`、`/help`、`/usage`、`/use`、`/get`、`/leave`、`/add`，以及命令菜单。 |
+| `bot/run.py` | 启动顺序：注册命令 → 登录 → 启动下载队列 → 等待消息。另有会话健康检查：连接假死时自动重启连接，进程和下载队列不动，传输断点续传。 |
+| `bot/commands.py` | `/start`、`/help`、`/usage`、`/use`、`/get`、`/leave`、`/add`、`/queue`、`/files`，以及命令菜单。 |
 | `bot/folder.py` | 记住当前保存目录。`/use` 切换，`/leave` 回到 `data/`。 |
+| `bot/filebrowser.py` | `/files` 的目录浏览、进入子目录/返回上级、文件删除（二次确认）。 |
 | `bot/sysinfo.py` | 给 `/usage` 提供磁盘容量、已用、剩余空间。 |
 | `bot/util.py` | 只允许管理员使用；把字节和秒转成可读的大小、时间。 |
 
@@ -122,7 +124,7 @@ python start.py
 | `groups.py` | 等一组文件到齐后再一起处理。 |
 | `fileformat.py` | 下载完成后按文件真实格式校正后缀，不改文件内容。 |
 | `transfer.py` | 可续传下载：按 1MB 分片拉取，失败保留 `.temp` 并从偏移重试。 |
-| `manager.py` | 从队列取出任务，执行下载，更新进度，处理「停止」。一组文件共用一条进度消息。 |
+| `manager.py` | 从队列取出任务，执行下载，更新进度，处理「停止」。一组文件共用一条进度消息。`/queue` 的队列视图和取消也在这里。 |
 | `store.py` | 本地 SQLite 记录 file_unique_id 和文件哈希，下载前/后拦截重复。 |
 | `types.py` | 单个下载任务，以及一组文件的共享状态。 |
 
@@ -151,6 +153,8 @@ python start.py
 | 你想改什么 | 去哪个文件 |
 | :--- | :--- |
 | 机器人回复的中文文案 | `bot/commands.py`、`bot/download/handler.py`、`bot/download/manager.py`、`bot/util.py` |
+| 下载队列（/queue）的展示和取消 | `bot/download/manager.py` |
+| 文件管理（/files）的浏览和删除 | `bot/filebrowser.py` |
 | 网页外观和输入框 | `web/templates/index.html` |
 | 配置项有哪些 | `web/settings.py` |
 | 启动方式、代理、Telegram 客户端 | `bot/app.py` |

@@ -12,6 +12,11 @@ MIB = 1024 * KIB
 GIB = 1024 * MIB
 
 
+def clip_button_text(text: str, limit: int = 24) -> str:
+    text = text.replace("\n", " ")
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def humanReadableSize(size: float) -> str:
     symbol, divider = "B", 1
     if size >= GIB:

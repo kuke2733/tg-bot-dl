@@ -10,9 +10,16 @@ from time import time
 
 from pyrogram.client import Client
 from pyrogram.enums import ParseMode
+from pyrogram.errors import FloodWait
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot.app import BASE_FOLDER, MAX_SIMULTANEOUS_TRANSMISSIONS
+from bot.app import BASE_FOLDER, MAX_SIMULTANEOUS_TRANSMISSIONS, app, user
+from bot.download import persist as queue_persist
+from bot.download.cleanup import (
+    cleanup_batch_files,
+    cleanup_partial_download,
+    schedule_cleanup_retry,
+)
 from bot.download.fileformat import align_filename_to_container
 from bot.download.names import replace_filename, unique_filename, with_media_extension
 from bot.download.store import (
@@ -32,6 +39,8 @@ downloads: list[Download] = []
 running = 0
 stop: list[int] = []
 active_batches: dict[str, Batch] = {}
+# 正在执行 downloadFile 的任务；还在排队的任务只出现在 downloads 里
+active_downloads: list[Download] = []
 # 进度消息 / 原消息 id -> 仍可改名的下载任务
 rename_targets: dict[int, Download] = {}
 
@@ -52,6 +61,8 @@ pending_hash: dict[str, HashPrompt] = {}
 BATCH_CLEANUP_TIMEOUT = 15.0
 FILE_HANDLE_RELEASE_WAIT = 1.5
 BATCH_CLEANUP_CHECK_INTERVAL = 0.3
+# 停止后等待传输协程自行退出的时间；断线重试等场景卡住不动就强制取消
+STOP_CANCEL_GRACE = 10.0
 STOPPED_TEXT = "已停止并删除"
 UNIQUE_DUP_TEXT = "这个文件下载过，取消还是继续？"
 HASH_DUP_TEXT = "和历史下载的文件内容相同，保留还是删除？"
@@ -134,6 +145,143 @@ def queue_download(download: Download) -> None:
     track_unique(download.unique_id)
     downloads.append(download)
     register_rename_target(download)
+    try:
+        queue_persist.add_task(queue_persist.task_record(download))
+    except Exception:
+        logging.exception("持久化下载任务失败：%s", download.filename)
+
+
+async def restore_saved_queue() -> None:
+    """进程重启后恢复上次未完成的下载任务（配合 .temp 断点续传）。"""
+    batches, tasks = queue_persist.load()
+    if not tasks and not batches:
+        return
+    logging.warning(
+        "发现上次未完成的下载任务：%d 个任务 / %d 个批次，开始恢复", len(tasks), len(batches)
+    )
+    rebuilt: dict[str, Batch] = {}
+
+    for batch_id, record in batches.items():
+        chat_id = record.get("chat_id")
+        if chat_id is None:
+            continue
+        try:
+            if record.get("message_id"):
+                fetched = await app.get_messages(chat_id, [record["message_id"]])
+                old = fetched[0] if fetched else None
+                if old is not None:
+                    await safe_edit(
+                        old,
+                        f"文件夹 `{record['folder']}` 的任务已中断，机器人重启后重新排队，请看新的进度消息。",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+        except Exception:
+            logging.debug("标注旧批次消息失败", exc_info=True)
+        try:
+            new_message = await app.send_message(
+                chat_id,
+                f"🔄 恢复文件夹任务 `{record['folder']}`，下载进度会在这条消息里更新。",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception:
+            logging.exception("发送批次恢复消息失败：%s", record["folder"])
+            continue
+        batch = Batch(
+            id=batch_id,
+            folder=record["folder"],
+            total=0,
+            message=new_message,
+            directory=record.get("directory") or "",
+        )
+        active_batches[batch.id] = batch
+        queue_persist.add_batch(queue_persist.batch_record(batch))
+        rebuilt[batch_id] = batch
+
+    restored = 0
+    for key, record in tasks.items():
+        try:
+            ok = await _restore_task(key, record, rebuilt)
+        except Exception:
+            logging.exception("恢复下载任务失败：%s", record.get("filename"))
+            ok = False
+        if ok:
+            restored += 1
+        else:
+            queue_persist.remove_task(key)
+    for batch_id, batch in list(rebuilt.items()):
+        if not batch.items:
+            if active_batches.pop(batch_id, None) is not None:
+                queue_persist.remove_batch(batch_id)
+            await safe_edit(
+                batch.message,
+                f"文件夹 `{batch.folder}` 没有可恢复的任务（源消息可能已删除）。",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+    logging.warning("下载任务恢复完成：%d/%d", restored, len(tasks))
+
+
+async def _restore_task(key: str, record: dict, rebuilt: dict[str, Batch]) -> bool:
+    filename = record.get("filename") or ""
+    if not filename:
+        return False
+    if (Path(BASE_FOLDER) / filename).exists():
+        logging.warning("恢复跳过：文件已存在（可能中断前刚完成）：%s", filename)
+        return False
+    client = user if record.get("client") == "user" else app
+    if client is None:
+        logging.warning("恢复跳过：需要用户账号但未配置：%s", filename)
+        return False
+    chat_id = record.get("chat_id")
+    message_id = record.get("message_id")
+    if chat_id is None or not message_id:
+        return False
+    try:
+        fetched = await client.get_messages(chat_id, [message_id])
+    except Exception:
+        logging.exception("恢复任务取源消息失败：%s", filename)
+        return False
+    source = fetched[0] if fetched else None
+    if source is None or getattr(source, "empty", False) or not source.media:
+        logging.warning("恢复跳过：源消息不存在或已删除：%s", filename)
+        return False
+
+    batch = rebuilt.get(record.get("batch_id")) if record.get("batch_id") else None
+    batch_item = None
+    if batch is not None:
+        batch.total += 1
+        batch_item = BatchItem(download_id=source.id, name=Path(filename).name, status="waiting")
+        batch.items.append(batch_item)
+
+    download = Download(
+        client=client,
+        id=source.id,
+        filename=filename,
+        from_message=source,
+        progress_message=batch.message if batch else None,
+        expected_size=record.get("expected_size") or 0,
+        size=record.get("expected_size") or 0,
+        batch=batch,
+        batch_item=batch_item,
+        pending_rename=record.get("pending_rename"),
+        unique_id=record.get("unique_id") or "",
+    )
+    if batch is None:
+        old_progress = record.get("old_progress") or {}
+        notice_chat = old_progress.get("chat_id")
+        if notice_chat is None:
+            logging.warning("恢复跳过：缺少进度消息位置：%s", filename)
+            return False
+        try:
+            download.progress_message = await app.send_message(
+                notice_chat,
+                f"🔄 恢复下载任务 `{filename}`。",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception:
+            logging.exception("发送单任务恢复消息失败：%s", filename)
+            return False
+    queue_download(download)
+    return True
 
 
 def register_unique_prompt(download: Download) -> str:
@@ -195,7 +343,8 @@ async def run() -> None:
             if download not in downloads:
                 continue
             downloads.remove(download)
-            asyncio.create_task(downloadFile(download))
+            active_downloads.append(download)
+            download.task = asyncio.create_task(downloadFile(download))
             logging.info("New download initialized: %s", download.filename)
             running += 1
         try:
@@ -204,9 +353,23 @@ async def run() -> None:
             break
 
 
-async def safe_edit(message, text: str, **kwargs) -> None:
+# FloodWait 后按会话暂停进度编辑，避免反复触发限流越罚越重
+edit_cooldowns: dict[int, float] = {}
+
+
+async def safe_edit(message, text: str, *, important: bool = False, **kwargs) -> None:
+    """编辑消息；进度类编辑在限流冷却期直接跳过，important 的最终状态编辑仍会尝试。"""
+    chat_id = message.chat.id if message.chat else None
+    if not important and chat_id is not None and edit_cooldowns.get(chat_id, 0) > time():
+        logging.debug("编辑冷却中，跳过进度刷新")
+        return
     try:
         await message.edit(text=text, **kwargs)
+    except FloodWait as exc:
+        wait = int(getattr(exc, "value", 0) or 0)
+        if chat_id is not None:
+            edit_cooldowns[chat_id] = time() + wait + 1
+        logging.warning("编辑消息触发限流 %s 秒，期间暂停该会话的进度刷新", wait)
     except Exception as exc:
         logging.debug("更新下载消息失败：%s: %s", type(exc).__name__, exc)
 
@@ -328,41 +491,6 @@ async def wait_for_batch_cleanup(batch_id: str, timeout: float = BATCH_CLEANUP_T
     return False
 
 
-def cleanup_batch_files(batch: Batch) -> tuple[int, int]:
-    directory = Path(batch.directory) if batch.directory else None
-    if not directory or not directory.is_dir():
-        return 0, 0
-    if directory.resolve() == Path(BASE_FOLDER).resolve():
-        return 0, 0
-
-    deleted = 0
-    remaining = 0
-    try:
-        for file_path in directory.iterdir():
-            if not file_path.is_file():
-                continue
-            try:
-                file_path.unlink()
-                deleted += 1
-                logging.warning("已删除文件：%s", file_path.name)
-            except OSError as e:
-                remaining += 1
-                logging.warning("无法删除文件 %s: %s", file_path.name, e)
-
-        if remaining == 0:
-            try:
-                directory.rmdir()
-                logging.warning("已删除分组文件夹：%s", batch.folder)
-            except OSError as e:
-                logging.warning("无法删除文件夹 %s: %s", batch.folder, e)
-                remaining = len(list(directory.iterdir()))
-        else:
-            logging.warning("文件夹 %s 仍有 %d 个文件无法删除", batch.folder, remaining)
-    except OSError as e:
-        logging.error("清理文件夹失败 %s: %s", batch.folder, e)
-    return deleted, remaining
-
-
 async def finish_batch_item(batch: Batch) -> None:
     if batch.stopped:
         return
@@ -378,20 +506,8 @@ async def finish_batch_item(batch: Batch) -> None:
                 logging.warning("已删除空的分组文件夹：%s", batch.folder)
         except OSError:
             logging.debug("无法删除空文件夹：%s", directory, exc_info=True)
-    active_batches.pop(batch.id, None)
-
-
-def cleanup_partial_download(save_path: str, filename: str) -> None:
-    try:
-        file_path = Path(save_path)
-        if file_path.exists():
-            file_path.unlink()
-            logging.warning("已删除部分下载文件：%s", filename)
-        temp_path = Path(save_path + ".temp")
-        if temp_path.exists():
-            temp_path.unlink()
-    except OSError:
-        logging.debug("无法删除文件：%s", save_path, exc_info=True)
+    if active_batches.pop(batch.id, None) is not None:
+        queue_persist.remove_batch(batch.id)
 
 
 def mark_download_stopped(download: Download) -> None:
@@ -399,6 +515,27 @@ def mark_download_stopped(download: Download) -> None:
     download.ui_seq += 1
     if download.id not in stop:
         stop.append(download.id)
+    schedule_stop_watchdog(download)
+
+
+def schedule_stop_watchdog(download: Download) -> None:
+    """停止后给传输一段时间自行退出；卡住不动就强制取消任务，释放文件句柄。"""
+    if download.cancel_scheduled or download.task is None or download.finalizing:
+        return
+    download.cancel_scheduled = True
+
+    async def force_cancel() -> None:
+        await asyncio.sleep(STOP_CANCEL_GRACE)
+        task = download.task
+        if task is not None and not task.done() and not download.finalizing:
+            logging.warning(
+                "下载 %s 停止 %s 秒后仍在传输（可能卡在断线重试），强制中断",
+                download.filename,
+                STOP_CANCEL_GRACE,
+            )
+            task.cancel()
+
+    asyncio.create_task(force_cancel())
 
 
 def find_download_by_id(download_id: int) -> Download | None:
@@ -422,7 +559,7 @@ async def finalize_single_stopped(download: Download, save_path: str) -> None:
     mark_download_stopped(download)
     _pop_stop(download.id)
     cleanup_partial_download(save_path, download.filename)
-    await safe_edit(download.progress_message, STOPPED_TEXT, parse_mode=ParseMode.MARKDOWN)
+    await safe_edit(download.progress_message, STOPPED_TEXT, parse_mode=ParseMode.MARKDOWN, important=True)
 
 
 async def handle_stopped_download(download: Download, item: BatchItem | None, save_path: str) -> None:
@@ -498,6 +635,7 @@ async def prompt_hash_duplicate(
             HASH_DUP_TEXT,
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=hash_duplicate_keyboard(token),
+            important=True,
         )
     pending_hash[token] = HashPrompt(
         download=download,
@@ -547,6 +685,7 @@ async def finish_download_success(download: Download, item: BatchItem | None, re
         download.progress_message,
         success_text,
         parse_mode=ParseMode.MARKDOWN,
+        important=True,
     )
 
 
@@ -583,6 +722,7 @@ async def handle_download_failure(download: Download, item: BatchItem | None) ->
             download.progress_message,
             f"文件 `{download.filename}` 下载失败。",
             parse_mode=ParseMode.MARKDOWN,
+            important=True,
         )
 
 
@@ -624,6 +764,7 @@ async def downloadFile(download: Download) -> None:
             file_size=download.expected_size or download.size,
             on_retry=on_retry,
         )
+        download.finalizing = True
 
         if not isinstance(result, str):
             if item:
@@ -639,11 +780,27 @@ async def downloadFile(download: Download) -> None:
 
         await finish_download_success(download, item, result)
 
+    except asyncio.CancelledError:
+        # 停止看门狗强制中断：按已停止收尾，确保临时文件被清理、消息有交代
+        logging.warning("下载 %s 被强制中断，按已停止处理", download.filename)
+        if download.batch:
+            await handle_stopped_download(download, item, save_path)
+        else:
+            await finalize_single_stopped(download, save_path)
+        raise
     except Exception:
         logging.exception("下载失败：%s", download.filename)
         cleanup_partial_download(save_path, download.filename)
         await handle_download_failure(download, item)
     finally:
+        try:
+            active_downloads.remove(download)
+        except ValueError:
+            pass
+        try:
+            queue_persist.remove_task(queue_persist.task_record(download)["key"])
+        except Exception:
+            logging.exception("移除持久化任务失败：%s", download.filename)
         unregister_rename_target(download)
         untrack_unique(download.unique_id)
         running -= 1
@@ -752,6 +909,7 @@ async def skip_unique_download(download: Download) -> None:
             download.progress_message,
             "已取消下载",
             parse_mode=ParseMode.MARKDOWN,
+            important=True,
         )
 
 
@@ -821,7 +979,35 @@ async def handle_hash_decision(callback: CallbackQuery, keep: bool) -> None:
         text = "已删除重复文件" if download.batch is None else f"`{name}` 已删除"
     if download.batch:
         await refresh_batch(download.batch, force=True)
-    await safe_edit(prompt.prompt_message, text, parse_mode=ParseMode.MARKDOWN)
+    await safe_edit(prompt.prompt_message, text, parse_mode=ParseMode.MARKDOWN, important=True)
+
+
+async def stop_batch_now(target: Batch) -> None:
+    """停止一个批次并清理其文件；只负责停止本身，不回复回调。"""
+    target.stopped = True
+    target.pending_unique.clear()
+    for item in list(downloads):
+        if item.batch and item.batch.id == target.id:
+            mark_download_stopped(item)
+    for item in list(rename_targets.values()):
+        if item.batch and item.batch.id == target.id:
+            mark_download_stopped(item)
+    for batch_item in target.items:
+        if batch_item.status in {"waiting", "downloading"}:
+            batch_item.status = "stopped"
+
+    if not await wait_for_batch_cleanup(target.id):
+        logging.warning("批次 %s 等待超时，强制清理", target.id)
+
+    deleted, remaining = cleanup_batch_files(target)
+    logging.warning("批次 %s 清理完成：删除 %d 个文件，剩余 %d 个", target.id, deleted, remaining)
+    if remaining and target.directory:
+        schedule_cleanup_retry(target.directory, target.folder)
+    for batch_item in target.items:
+        batch_item.status = "deleted"
+    await safe_edit(target.message, STOPPED_TEXT, parse_mode=ParseMode.MARKDOWN, important=True)
+    if active_batches.pop(target.id, None) is not None:
+        queue_persist.remove_batch(target.id)
 
 
 async def handle_stop_batch(callback: CallbackQuery, batch_id: str) -> None:
@@ -830,28 +1016,8 @@ async def handle_stop_batch(callback: CallbackQuery, batch_id: str) -> None:
         await callback.answer("该批次已完成或不存在")
         return
 
-    target.stopped = True
-    target.pending_unique.clear()
-    for item in list(downloads):
-        if item.batch and item.batch.id == batch_id:
-            mark_download_stopped(item)
-    for item in list(rename_targets.values()):
-        if item.batch and item.batch.id == batch_id:
-            mark_download_stopped(item)
-    for batch_item in target.items:
-        if batch_item.status in {"waiting", "downloading"}:
-            batch_item.status = "stopped"
-
     await callback.answer("正在停止...")
-    if not await wait_for_batch_cleanup(batch_id):
-        logging.warning("批次 %s 等待超时，强制清理", batch_id)
-
-    deleted, remaining = cleanup_batch_files(target)
-    logging.warning("批次 %s 清理完成：删除 %d 个文件，剩余 %d 个", batch_id, deleted, remaining)
-    for batch_item in target.items:
-        batch_item.status = "deleted"
-    await safe_edit(target.message, STOPPED_TEXT, parse_mode=ParseMode.MARKDOWN)
-    active_batches.pop(batch_id, None)
+    await stop_batch_now(target)
 
 
 async def handle_stop_single(callback: CallbackQuery, download_id: int) -> None:
@@ -866,8 +1032,35 @@ async def handle_stop_single(callback: CallbackQuery, download_id: int) -> None:
     await callback.answer("正在停止...")
 
 
+def path_in_use(rel_path: str) -> bool:
+    """文件是否正被下载任务占用（任务的目标文件，或它的 .temp 临时文件）。"""
+    base = Path(BASE_FOLDER)
+    try:
+        target = str((base / rel_path).resolve())
+    except OSError:
+        return False
+    candidates = [download.filename for download in active_downloads]
+    candidates += [download.filename for download in downloads]
+    candidates += [prompt.path for prompt in pending_hash.values()]
+    for name in candidates:
+        try:
+            if str((base / name).resolve()) == target:
+                return True
+            if str((base / f"{name}.temp").resolve()) == target:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 async def handle_callback(_, callback: CallbackQuery) -> None:
     data = callback.data or ""
+    if data.startswith("qstopb ") or data.startswith("qstop ") or data == "qref":
+        # /queue 队列视图的回调
+        from bot.download import queueview
+
+        await queueview.handle_queue_callback(callback)
+        return
     if data.startswith("stopb "):
         await handle_stop_batch(callback, data.split(" ", 1)[1])
         return
@@ -891,6 +1084,12 @@ async def handle_callback(_, callback: CallbackQuery) -> None:
         return
     if data.startswith("hdel "):
         await handle_hash_decision(callback, False)
+        return
+    if data.startswith("f"):
+        # /files 文件管理的回调统一由 filebrowser 处理
+        from bot.filebrowser import handle_files_callback
+
+        await handle_files_callback(callback)
         return
     await callback.answer()
 

@@ -10,6 +10,7 @@ from pyrogram.types import InlineKeyboardMarkup, Message
 from bot import folder
 from bot.app import app, user
 from bot.download.groups import MediaGroupCollector
+from bot.download import persist as queue_persist
 from bot.download.manager import (
     UNIQUE_DUP_TEXT,
     active_batches,
@@ -296,6 +297,7 @@ async def enqueue_messages(
         directory=os.path.join(folder.get(), subfolder),
     )
     active_batches[batch.id] = batch
+    queue_persist.add_batch(queue_persist.batch_record(batch))
 
     used_names: set[str] = set()
     for message in messages:

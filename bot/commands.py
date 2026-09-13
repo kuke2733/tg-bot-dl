@@ -14,6 +14,8 @@ from bot.app import DL_FOLDER, user
 from bot import folder, sysinfo
 from bot.download import handler as download_handler
 from bot.download import manager as download_manager
+from bot.download import queueview
+from bot.filebrowser import listFiles
 from bot.util import checkAdmins
 
 LINK_HOSTS = {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}
@@ -92,6 +94,8 @@ def register(app: Client):
     addCommand(app, leaveFolder, "leave")
     addCommand(app, getFolder, "get")
     addCommand(app, addByLink, "add")
+    addCommand(app, showQueue, "queue")
+    addCommand(app, listFiles, "files")
     app.add_handler(MessageHandler(onIncomingMessage), group=-100)
     app.add_handler(
         MessageHandler(checkAdmins(download_handler.addFile), document | media)
@@ -143,6 +147,8 @@ async def set_menu(app: Client):
             BotCommand("get", "查看当前目录"),
             BotCommand("leave", "回到根目录"),
             BotCommand("add", "通过链接下载文件"),
+            BotCommand("queue", "查看下载队列"),
+            BotCommand("files", "管理已下载文件"),
         ]
     )
 
@@ -228,3 +234,9 @@ async def getFolder(_, message: Message):
     """查看当前下载目录"""
     path = folder.getPath()
     await message.reply(f"当前目录是 `{path}`")
+
+
+async def showQueue(_, message: Message):
+    """查看下载队列，可取消任务"""
+    text, markup = queueview.render_queue()
+    await message.reply(text, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)

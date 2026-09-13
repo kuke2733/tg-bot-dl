@@ -17,3 +17,6 @@ venv/
 *.log
 .DS_Store
 Thumbs.db
+.zcode/
+config/queue.json
+config/listening.json

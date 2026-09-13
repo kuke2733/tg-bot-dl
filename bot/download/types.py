@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 
 from pyrogram.client import Client
@@ -73,3 +74,7 @@ class Download:
     ui_seq: int = 0
     unique_id: str = ""
     skip_hash_check: bool = False
+    # 正在执行的下载任务；停止后超时会被强制取消
+    task: asyncio.Task | None = None
+    finalizing: bool = False
+    cancel_scheduled: bool = False
