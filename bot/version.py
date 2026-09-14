@@ -1,4 +1,4 @@
-VERSION = "1.0.7"
+VERSION = "1.0.8"
 APP_NAME = "TDownloader"
 DEVICE_MODEL = "Download Box"
 APP_VERSION = f"{APP_NAME} {VERSION}"
