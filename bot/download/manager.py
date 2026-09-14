@@ -37,7 +37,7 @@ from bot.download.state import (
     unregister_rename_target,
 )
 from bot.download.store import find_by_sha256, hash_file, init as init_store, remember
-from bot.download.transfer import DownloadExhausted, download_with_resume
+from bot.download.transfer import DownloadExhausted, download_with_resume, prepare_temp_file, temp_path_for
 from bot.download.types import BatchItem, Download
 from bot.util import humanReadableSize, humanReadableTime
 
@@ -75,6 +75,7 @@ async def finish_download_success(download: Download, item: BatchItem | None, re
     actual_size = Path(result).stat().st_size if Path(result).exists() else (
         download.expected_size or download.size
     )
+    session_bytes = max(actual_size - (download.resume_from or 0), 0)
 
     # 完成校验：实际大小与 Telegram 报的大小不一致视为失败
     if result and download.expected_size and Path(result).exists() and actual_size != download.expected_size:
@@ -87,7 +88,7 @@ async def finish_download_success(download: Download, item: BatchItem | None, re
         await handle_download_failure(download, item, note=note)
         return
 
-    speed = humanReadableSize(actual_size / seconds_took)
+    speed = humanReadableSize(session_bytes / seconds_took)
     time_took = humanReadableTime(int(seconds_took))
     success_text = success_text_for(download, actual_size, time_took, speed)
 
@@ -182,6 +183,7 @@ async def downloadFile(download: Download) -> None:
             return
 
         await start_download_progress(download, item)
+        download.resume_from = prepare_temp_file(temp_path_for(save_path))
         download.started = time()
 
         async def on_retry(attempt: int, exc: BaseException, resumed: int) -> None:
@@ -284,8 +286,9 @@ def createProgress(client: Client):
             size_line = f"{humanReadableSize(received)}/{humanReadableSize(total)} {percent:0.2f}%"
         else:
             size_line = f"已下载 {humanReadableSize(received)}"
+        session_bytes = max(received - (download.resume_from or 0), 0)
         elapsed = max(now - download.started, 1)
-        avg_speed = received / elapsed
+        avg_speed = session_bytes / elapsed
         if total and avg_speed > 0:
             tte = int((total - received) / avg_speed)
             speed_line = f"{humanReadableSize(avg_speed)}/s，预计还需 {humanReadableTime(tte)}"
@@ -301,6 +304,7 @@ def createProgress(client: Client):
                 item.received = received
                 item.total = total
                 item.started = download.started or item.started or now
+                item.resume_from = download.resume_from
             batch = download.batch
 
             async def _refresh():

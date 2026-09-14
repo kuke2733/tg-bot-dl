@@ -211,7 +211,8 @@ def item_speed_line(item: BatchItem) -> str:
     if item.status != "downloading" or not item.started or not item.received:
         return ""
     elapsed = max(time() - item.started, 1)
-    avg_speed = item.received / elapsed
+    session_bytes = max(item.received - (item.resume_from or 0), 0)
+    avg_speed = session_bytes / elapsed
     if avg_speed <= 0:
         return ""
     if item.total and item.received < item.total:

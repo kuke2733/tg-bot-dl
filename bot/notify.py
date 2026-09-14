@@ -47,7 +47,7 @@ async def notify_version_update() -> None:
     try:
         await app.send_message(
             admin,
-            f"🆕 {APP_NAME} 已更新：{last} → {VERSION}\n发 /help 可查看当前命令列表。",
+            f"{APP_NAME} 已更新：{last} → {VERSION}",
             parse_mode=ParseMode.DISABLED,
         )
     except Exception:

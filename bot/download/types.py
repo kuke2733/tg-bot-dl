@@ -69,6 +69,7 @@ class BatchItem:
     received: int = 0
     total: int = 0
     started: float = 0.0
+    resume_from: int = 0
 
 
 @dataclass
@@ -118,6 +119,7 @@ class Download:
     last_update: float = 0.0
     size: int = 0
     expected_size: int = 0
+    resume_from: int = 0
     batch: Batch | None = None
     batch_item: BatchItem | None = None
     pending_rename: str | None = None
