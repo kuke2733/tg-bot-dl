@@ -81,11 +81,16 @@ async def _status_message(
     reply_markup: InlineKeyboardMarkup | None = None,
 ) -> Message:
     if seed is not None:
-        try:
-            await seed.edit(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        ok = await safe_edit(
+            seed,
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=reply_markup,
+            important=True,
+        )
+        if ok:
             return seed
-        except Exception:
-            logging.debug("编辑状态消息失败，改为新发", exc_info=True)
+        logging.debug("编辑状态消息失败，改为新发")
     return await app.send_message(
         target.chat.id,
         text,

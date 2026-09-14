@@ -24,7 +24,7 @@ from bot.download.lifecycle import (
     handle_stopped_download,
 )
 from bot.download.names import replace_filename, unique_filename, with_media_extension
-from bot.download.render import delete_message_later, safe_edit, stop_keyboard, success_text_for
+from bot.download.render import MIN_EDIT_INTERVAL, delete_message_later, safe_edit, stop_keyboard, success_text_for
 from bot.download.state import (
     _event_info,
     active_downloads,
@@ -261,7 +261,7 @@ def createProgress(client: Client):
 
         # 进度用 create_task，避免 await 发消息拖慢下载
         now = time()
-        if download.last_update != 0 and (now - download.last_update) < 1.5:
+        if download.last_update != 0 and (now - download.last_update) < MIN_EDIT_INTERVAL:
             return
         download.last_update = now
         expected = download.expected_size or 0

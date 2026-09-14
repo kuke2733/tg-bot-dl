@@ -13,13 +13,7 @@ from time import time
 from pyrogram.enums import ParseMode
 
 from bot.download import persist as queue_persist
-from bot.download.render import (
-    batch_keyboard,
-    delete_message_later,
-    render_batch,
-    safe_edit,
-    stop_keyboard,
-)
+from bot.download.render import MIN_EDIT_INTERVAL, batch_keyboard, delete_message_later, render_batch, safe_edit, stop_keyboard
 from bot.download.state import active_batches, downloads, rename_targets
 from bot.download.types import Batch, BatchItem, Download
 from bot.util import humanReadableSize
@@ -31,7 +25,7 @@ BATCH_CLEANUP_CHECK_INTERVAL = 0.3
 
 async def refresh_batch(batch: Batch, force: bool = False) -> None:
     now = time()
-    if not force and batch.last_update and now - batch.last_update < 1:
+    if not force and batch.last_update and now - batch.last_update < MIN_EDIT_INTERVAL:
         return
     batch.last_update = now
     active = batch.finished < (len(batch.items) or batch.total) and not batch.stopped
@@ -40,6 +34,7 @@ async def refresh_batch(batch: Batch, force: bool = False) -> None:
         render_batch(batch),
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=batch_keyboard(batch) if active else None,
+        important=force,
     )
 
 
