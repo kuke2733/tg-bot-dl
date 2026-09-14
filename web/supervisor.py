@@ -1,5 +1,6 @@
 import atexit
 import os
+import re
 import sys
 import threading
 import time
@@ -20,6 +21,8 @@ PROMPTS = (
     ("waiting_password", "Password hint:"),
     ("waiting_password", "Two-step verification"),
 )
+
+_PY_LOG = re.compile(r"^(DEBUG|INFO|WARNING|ERROR|CRITICAL):([^:]*):(.*)$", re.I)
 
 ROOT = Path(__file__).resolve().parent.parent
 CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -59,14 +62,21 @@ class BotSupervisor:
             return
 
         level = "INFO"
+        display = line
         line_lower = line.lower()
+        py = _PY_LOG.match(line)
 
         if "traceback (most recent call last)" in line_lower:
             self.in_error_traceback = True
             level = "ERROR"
-        elif any(x in line_lower for x in ["error", "exception", "failed", "fatal"]):
-            level = "ERROR"
-            self.in_error_traceback = True
+        elif py:
+            # 用 Python 自带级别，去掉正文 INFO:root: 避免面板叠两层
+            level = py.group(1).upper()
+            if level == "CRITICAL":
+                level = "ERROR"
+            logger, message = py.group(2), py.group(3)
+            display = message if logger in ("", "root") else f"{logger}: {message}"
+            self.in_error_traceback = False
         elif self.in_error_traceback:
             level = "ERROR"
             if (
@@ -77,6 +87,9 @@ class BotSupervisor:
                 and not any(x in line for x in ["Error", "Exception"])
             ):
                 self.in_error_traceback = False
+        elif any(x in line_lower for x in ["error", "exception", "fatal"]):
+            level = "ERROR"
+            self.in_error_traceback = True
         elif any(x in line_lower for x in ["warning", "warn"]):
             level = "WARNING"
             self.in_error_traceback = False
@@ -90,7 +103,9 @@ class BotSupervisor:
             self.in_error_traceback = False
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        formatted_line = f"[{timestamp}] [{level}] {line}"
+        formatted_line = f"[{timestamp}] [{level}] {display}"
+        # 子进程输出进了管道，转到主进程给 docker logs
+        print(line, flush=True)
 
         with self.lock:
             self.logs.append(formatted_line)

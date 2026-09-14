@@ -58,7 +58,7 @@ async def run() -> None:
                 downloads.remove(download)
                 active_downloads.append(download)
                 download.task = asyncio.create_task(downloadFile(download))
-                logging.info("New download initialized: %s", download.filename)
+                logging.info("开始下载：%s", download.filename)
                 running += 1
         try:
             await asyncio.sleep(1)
@@ -119,6 +119,13 @@ async def finish_download_success(download: Download, item: BatchItem | None, re
         return
 
     remember(download.unique_id, sha256, actual_size, download.filename)
+    logging.info(
+        "下载完成：%s，%s，用时 %s，平均 %s/s",
+        download.filename,
+        humanReadableSize(actual_size),
+        time_took,
+        speed,
+    )
 
     if download.batch:
         if item:
