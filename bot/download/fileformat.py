@@ -83,10 +83,10 @@ def align_filename_to_container(saved_path: str, relative_name: str) -> tuple[st
 
     new_path = path.with_suffix(detected)
     if new_path.exists():
-        logging.warning("未改后缀，目标已存在：%s", new_path.name)
+        logging.info("未改后缀，目标已存在：%s", new_path.name)
         return saved_path, relative_name
 
     path.rename(new_path)
     new_rel = str(Path(relative_name).with_suffix(detected)).replace("\\", "/")
-    logging.warning("按真实格式调整后缀：%s -> %s", relative_name, new_rel)
+    logging.info("按真实格式调整后缀：%s -> %s", relative_name, new_rel)
     return str(new_path), new_rel

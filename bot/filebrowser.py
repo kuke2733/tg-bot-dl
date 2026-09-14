@@ -219,7 +219,7 @@ async def delete_entry(
         await callback.answer("删除失败，文件可能被其他程序占用。")
         await show_listing(message, view.rel_dir)
         return
-    logging.warning("已通过 /files 删除文件：%s", rel_path)
+    logging.info("已通过 /files 删除文件：%s", rel_path)
     # 去重记录同步失效，否则下次发同一个文件会被误判「下载过」
     delete_by_path(rel_path)
     await callback.answer("已删除")
@@ -277,7 +277,7 @@ async def delete_current_dir(
         return
     for rel in record_paths:
         delete_by_path(rel)
-    logging.warning("已通过 /files 删除目录：%s", view.rel_dir)
+    logging.info("已通过 /files 删除目录：%s", view.rel_dir)
     await callback.answer("目录已删除")
     parent = view.rel_dir.rsplit("/", 1)[0] if "/" in view.rel_dir else ""
     await show_listing(message, parent)

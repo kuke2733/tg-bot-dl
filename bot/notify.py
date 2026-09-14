@@ -37,7 +37,7 @@ async def notify_version_update() -> None:
         return
     if not last:
         # 首次运行，没有历史版本记录：只记录，不算更新
-        logging.warning("首次运行，记录版本号 %s", VERSION)
+        logging.info("首次运行，记录版本号 %s", VERSION)
         _save(VERSION)
         return
     admin = await admin_chat()
@@ -53,7 +53,7 @@ async def notify_version_update() -> None:
     except Exception:
         logging.warning("发送版本更新提示失败，下次启动会重试", exc_info=True)
         return
-    logging.warning("已通知管理员程序更新：%s -> %s", last, VERSION)
+    logging.info("已通知管理员程序更新：%s -> %s", last, VERSION)
     _save(VERSION)
 
 

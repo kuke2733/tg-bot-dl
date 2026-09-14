@@ -39,7 +39,7 @@ async def restore_saved_queue() -> None:
     batches, tasks = queue_persist.load()
     if not tasks and not batches:
         return
-    logging.warning(
+    logging.info(
         "发现上次未完成的下载任务：%d 个任务 / %d 个批次，开始恢复", len(tasks), len(batches)
     )
     rebuilt: dict[str, Batch] = {}
@@ -110,7 +110,7 @@ async def restore_saved_queue() -> None:
                 f"文件夹 `{batch.folder}` 没有可恢复的任务（源消息可能已删除）。",
                 parse_mode=ParseMode.MARKDOWN,
             )
-    logging.warning("下载任务恢复完成：%d/%d", restored, len(tasks))
+    logging.info("下载任务恢复完成：%d/%d", restored, len(tasks))
 
 
 async def _restore_task(key: str, record: dict, rebuilt: dict[str, Batch]) -> bool:
@@ -119,7 +119,7 @@ async def _restore_task(key: str, record: dict, rebuilt: dict[str, Batch]) -> bo
         return False
     save_path = str(Path(BASE_FOLDER) / filename)
     if (Path(BASE_FOLDER) / filename).exists():
-        logging.warning("恢复跳过：文件已存在，可能中断前刚完成：%s", filename)
+        logging.info("恢复跳过：文件已存在，可能中断前刚完成：%s", filename)
         return False
     from bot.app import user
 

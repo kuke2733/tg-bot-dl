@@ -255,7 +255,7 @@ async def _handle_post(message: Message) -> None:
     if entry is None:
         logging.debug("频道帖不在监听列表，忽略：chat=%s id=%s", chat.id, message.id)
         return
-    logging.warning(
+    logging.info(
         "收到监听频道新帖：%s id=%s", entry.get("title") or chat.id, message.id
     )
     await _process_channel_post(message, entry)
@@ -286,7 +286,7 @@ async def _process_channel_post(message: Message, entry: dict) -> None:
     )
     if reason:
         digest_add(chat.id, title, f"⏭️ 跳过疑似广告：{reason}")
-        logging.warning("频道监听跳过疑似广告：%s %s", title, reason)
+        logging.info("频道监听跳过疑似广告：%s %s", title, reason)
         return
 
     admin = await util.admin_chat()
@@ -322,7 +322,7 @@ def cancel_backfill(chat_id: int) -> None:
     task = _backfill_tasks.pop(chat_id, None)
     if task is not None and not task.done():
         task.cancel()
-        logging.warning("已中止历史回填：%s", chat_id)
+        logging.info("已中止历史回填：%s", chat_id)
 
 
 def cancel_backfill_by_folder(folder: str) -> None:
@@ -348,12 +348,12 @@ async def _backfill_history(chat_id: int, entry: dict, limit: int) -> None:
         digest_add(chat_id, title, "⏭️ 历史回填失败：无法读取频道历史")
         return
     buffered.reverse()  # get_chat_history 从新到旧，倒过来按时间正序下载
-    logging.warning("历史回填：%s 扫描 %d 条消息，其中 %d 条媒体待处理", title, limit, len(buffered))
+    logging.info("历史回填：%s 扫描 %d 条消息，其中 %d 条媒体待处理", title, limit, len(buffered))
     digest_add(chat_id, title, f"📜 开始回填历史：{len(buffered)} 条媒体帖")
     for message in buffered:
         if _entry_for(chat_id) is None:
             # 中途被 /unlisten：停止回填
-            logging.warning("频道已停止监听，历史回填中止：%s", title)
+            logging.info("频道已停止监听，历史回填中止：%s", title)
             return
         try:
             await _process_channel_post(message, entry)
@@ -503,7 +503,7 @@ async def _migrate_links() -> None:
         else:
             continue
         changed = True
-        logging.warning("已补存频道链接：%s -> %s", entry.get("title"), entry["link"])
+        logging.info("已补存频道链接：%s -> %s", entry.get("title"), entry["link"])
     if changed:
         save_config()
 
@@ -549,7 +549,7 @@ async def handle_unlisten_callback(callback: CallbackQuery) -> None:
     else:
         save_config()
         title = entry.get("title") or entry.get("folder") or chat_id
-        logging.warning("已通过监听面板取消监听：%s", title)
+        logging.info("已通过监听面板取消监听：%s", title)
         await callback.answer(f"已停止监听：{title}")
     if message is None:
         return
@@ -566,13 +566,13 @@ def register(client) -> None:
     # 真正的收帖在用户账号侧，见 register_user_channel_handler。
     client.add_handler(MessageHandler(silence_channel_post, filters.channel))
     _dl_event_listeners.append(on_download_event)
-    logging.warning("频道监听已就绪：%d 个频道，收帖走用户账号", len(_config.get("chats", {})))
+    logging.info("频道监听已就绪：%d 个频道，收帖走用户账号", len(_config.get("chats", {})))
 
 
 def register_user_channel_handler(client) -> None:
     """用户账号侧的频道监听：唯一的收帖路径，机器人无需加入任何频道。"""
     client.add_handler(MessageHandler(on_channel_post, filters.channel))
-    logging.warning("用户账号频道监听已就绪")
+    logging.info("用户账号频道监听已就绪")
 
 
 # —— 按钮回调注册，协议前缀与路由见 bot/callbacks.py ——

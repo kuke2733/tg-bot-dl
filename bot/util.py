@@ -123,7 +123,7 @@ async def admin_chat() -> int | None:
             target = int(token) if token.isdigit() else (token if token.startswith("@") else f"@{token}")
             chat = await app.get_chat(target)
             _admin_chat_id = chat.id
-            logging.warning("管理员通知发送到会话：%s", chat.id)
+            logging.info("管理员通知发送到会话：%s", chat.id)
             return _admin_chat_id
         except Exception:
             logging.warning("解析管理员会话失败：%s", token)

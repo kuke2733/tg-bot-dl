@@ -50,7 +50,7 @@ async def finish_batch_item(batch: Batch) -> None:
         try:
             if not list(directory.iterdir()):
                 directory.rmdir()
-                logging.warning("已删除空的分组文件夹：%s", batch.folder)
+                logging.info("已删除空的分组文件夹：%s", batch.folder)
         except OSError:
             logging.debug("无法删除空文件夹：%s", directory, exc_info=True)
     if active_batches.pop(batch.id, None) is not None:

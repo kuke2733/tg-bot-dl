@@ -36,7 +36,7 @@ def cleanup_directory(directory: Path, folder: str) -> tuple[int, int]:
                 try:
                     shutil.rmtree(entry)
                     deleted += 1
-                    logging.warning("已删除子目录：%s", entry.name)
+                    logging.info("已删除子目录：%s", entry.name)
                 except OSError as e:
                     remaining += 1
                     logging.warning("无法删除子目录 %s: %s", entry.name, e)
@@ -45,7 +45,7 @@ def cleanup_directory(directory: Path, folder: str) -> tuple[int, int]:
                 entry.unlink()
                 deleted += 1
                 _forget_record(entry)
-                logging.warning("已删除文件：%s", entry.name)
+                logging.info("已删除文件：%s", entry.name)
             except OSError as e:
                 remaining += 1
                 logging.warning("无法删除文件 %s: %s", entry.name, e)
@@ -53,7 +53,7 @@ def cleanup_directory(directory: Path, folder: str) -> tuple[int, int]:
         if remaining == 0:
             try:
                 directory.rmdir()
-                logging.warning("已删除分组文件夹：%s", folder)
+                logging.info("已删除分组文件夹：%s", folder)
             except OSError as e:
                 logging.warning("无法删除文件夹 %s: %s", folder, e)
                 remaining = len(list(directory.iterdir()))
@@ -85,7 +85,7 @@ def schedule_cleanup_retry(directory: str, folder: str) -> None:
                 return
             cleanup_directory(path, folder)
             if not path.is_dir():
-                logging.warning("重试清理完成，已删除残留文件夹：%s", folder)
+                logging.info("重试清理完成，已删除残留文件夹：%s", folder)
                 return
         logging.warning("文件夹 %s 清理重试超时，请手动删除：%s", folder, directory)
 
@@ -104,7 +104,7 @@ def schedule_file_cleanup_retry(save_path: str) -> None:
             try:
                 if file_path.exists():
                     file_path.unlink()
-                    logging.warning("已删除残留下载文件：%s", file_path.name)
+                    logging.info("已删除残留下载文件：%s", file_path.name)
                 if temp_path.exists():
                     temp_path.unlink()
             except OSError:
@@ -121,11 +121,11 @@ def cleanup_partial_download(save_path: str, filename: str) -> None:
         file_path = Path(save_path)
         if file_path.exists():
             file_path.unlink()
-            logging.warning("已删除部分下载文件：%s", filename)
+            logging.info("已删除部分下载文件：%s", filename)
         temp_path = Path(save_path + ".temp")
         if temp_path.exists():
             temp_path.unlink()
-            logging.warning("已删除断点临时文件：%s.temp", filename)
+            logging.info("已删除断点临时文件：%s.temp", filename)
     except OSError:
         logging.warning("下载文件暂时无法删除，句柄未释放，稍后自动重试：%s", filename)
         schedule_file_cleanup_retry(save_path)

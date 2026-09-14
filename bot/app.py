@@ -37,7 +37,7 @@ DL_FOLDER = BASE_FOLDER
 
 DEBUG = bool(getenv('DEBUG'))
 logging.basicConfig(
-    level=logging.DEBUG if DEBUG else logging.WARNING,
+    level=logging.DEBUG if DEBUG else logging.INFO,
     format='%(levelname)s:%(name)s:%(message)s',
     handlers=[logging.StreamHandler()],
     force=True,
@@ -88,7 +88,7 @@ def parse_proxy(value: str | None):
             .replace('localhost', 'host.docker.internal')
         )
         if rewritten != value:
-            logging.warning(
+            logging.info(
                 'Docker detected, proxy rewritten to %s',
                 mask_proxy(rewritten),
             )
@@ -108,7 +108,7 @@ for path in [DL_FOLDER, CONFIG_FOLDER]:
         raise SystemExit(1)
 
 if PROXY:
-    logging.warning('Using proxy %s', mask_proxy(PROXY))
+    logging.info('Using proxy %s', mask_proxy(PROXY))
 
 app = Client(
     'TDownloader-bot',

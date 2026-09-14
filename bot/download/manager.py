@@ -98,7 +98,7 @@ async def finish_download_success(download: Download, item: BatchItem | None, re
         logging.exception("计算文件哈希失败：%s", result)
 
     if sha256 and not download.skip_hash_check and find_by_sha256(sha256):
-        logging.warning("下载后内容重复：%s sha256=%s", download.filename, sha256[:12])
+        logging.info("下载后内容重复：%s sha256=%s", download.filename, sha256[:12])
         if download.quiet:
             if item:
                 item.status = "content_duplicate"

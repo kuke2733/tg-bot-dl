@@ -26,7 +26,7 @@ async def restart_clients():
         except Exception:
             logging.debug("停止用户客户端失败", exc_info=True)
         await user.start()
-    logging.warning("Telegram 连接已恢复，下载任务会自动续传")
+    logging.info("Telegram 连接已恢复，下载任务会自动续传")
 
 
 async def session_monitor():
@@ -63,16 +63,16 @@ async def session_monitor():
 
 
 async def main():
-    logging.warning("Registering commands...")
+    logging.info("Registering commands...")
     commands.register(app)
-    logging.warning("Starting bot...")
+    logging.info("Starting bot...")
     await app.start()
     await commands.set_menu(app)
     if user:
-        logging.warning("Starting normal user")
+        logging.info("Starting normal user")
         await user.start()
         listener.register_user_channel_handler(user)
-    logging.warning("Starting download manager...")
+    logging.info("Starting download manager...")
     manager = asyncio.create_task(download_manager.run())
     try:
         await restore.restore_saved_queue()
@@ -84,17 +84,17 @@ async def main():
         logging.exception("版本更新提示流程失败")
     monitor = asyncio.create_task(session_monitor())
     me = await app.get_me()
-    logging.warning("Bot started! I'm @%s", me.username)
+    logging.info("Bot started! I'm @%s", me.username)
     await idle()
-    logging.warning("Stopping download manager...")
+    logging.info("Stopping download manager...")
     monitor.cancel()
     manager.cancel()
-    logging.warning("Stopping bot...")
+    logging.info("Stopping bot...")
     await app.stop()
     if user:
-        logging.warning("Stopping user...")
+        logging.info("Stopping user...")
         await user.stop()
-    logging.warning("All systems stopped!")
+    logging.info("All systems stopped!")
     return 0
 
 

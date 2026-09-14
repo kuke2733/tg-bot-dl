@@ -69,7 +69,7 @@ def release_disk_holds() -> int:
         count += 1
         logging.info("磁盘空间恢复，重新排队：%s", download.filename)
     if count:
-        logging.warning("磁盘空间恢复，%d 个驻留任务重新排队", count)
+        logging.info("磁盘空间恢复，%d 个驻留任务重新排队", count)
     return count
 
 
@@ -312,7 +312,7 @@ async def wake_cold_holds() -> int:
         requeue_held(download)
         woke += 1
     if woke:
-        logging.warning("连接恢复，唤醒 %d 个冷驻留任务继续下载", woke)
+        logging.info("连接恢复，唤醒 %d 个冷驻留任务继续下载", woke)
     return woke
 
 
@@ -350,7 +350,7 @@ async def handle_disk_full(download: Download, item) -> None:
 
         await notify.notify_disk_full(download.filename)
     except Exception:
-        logging.debug("磁盘满通知发送失败", exc_info=True)
+        logging.warning("磁盘满通知发送失败", exc_info=True)
 
 
 async def stop_batch_now(target: Batch) -> None:
@@ -374,7 +374,7 @@ async def stop_batch_now(target: Batch) -> None:
         logging.warning("批次 %s 等待超时，强制清理", target.id)
 
     deleted, remaining = cleanup.cleanup_batch_files(target)
-    logging.warning("批次 %s 清理完成：删除 %d 个文件，剩余 %d 个", target.id, deleted, remaining)
+    logging.info("批次 %s 清理完成：删除 %d 个文件，剩余 %d 个", target.id, deleted, remaining)
     if remaining and target.directory:
         cleanup.schedule_cleanup_retry(target.directory, target.folder)
     for batch_item in target.items:

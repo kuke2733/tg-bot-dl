@@ -227,7 +227,7 @@ async def enqueue_file(
         batch.items.append(batch_item)
 
     if is_unique_duplicate(unique_id):
-        logging.warning("下载前命中重复：%s unique_id=%s", rel, unique_id)
+        logging.info("下载前命中重复：%s unique_id=%s", rel, unique_id)
         if batch is not None:
             download = _make_download(
                 message, client, rel, batch.message, size, unique_id, batch, batch_item, quiet
@@ -261,7 +261,7 @@ async def enqueue_file(
 
     if batch is None:
         size_text = f"（{humanReadableSize(size)}）" if size else ""
-        logging.warning("收到文件，加入下载队列：%s %s unique_id=%s", rel, size_text, unique_id or "-")
+        logging.info("收到文件，加入下载队列：%s %s unique_id=%s", rel, size_text, unique_id or "-")
         if quiet:
             progress = await app.send_message(
                 notice_chat_id,
@@ -275,7 +275,7 @@ async def enqueue_file(
                 progress_seed,
             )
     else:
-        logging.warning("收到文件，加入下载队列：%s unique_id=%s", rel, unique_id or "-")
+        logging.info("收到文件，加入下载队列：%s unique_id=%s", rel, unique_id or "-")
         progress = batch.message
 
     queue_download(
