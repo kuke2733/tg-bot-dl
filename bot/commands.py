@@ -17,6 +17,7 @@ from bot import folder, listener, sysinfo
 from bot.download import handler as download_handler
 from bot.download import queueview
 from bot.filebrowser import listFiles
+from bot.tg_io import safe_reply
 from bot.util import checkAdmins
 
 LINK_HOSTS = {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}
@@ -164,7 +165,7 @@ async def onIncomingMessage(_, message: Message):
     if not any(hint in body for hint in UNAVAILABLE_HINTS):
         return
     try:
-        await message.reply("当前消息存在问题，请隐藏发送者名称后重新发送")
+        await safe_reply(message, "当前消息存在问题，请隐藏发送者名称后重新发送")
     except Exception:
         logging.debug("回复失败", exc_info=True)
 
@@ -197,7 +198,7 @@ def addCommand(app, func, cmd):
 
 async def start(_, message: Message):
     """开始使用"""
-    await message.reply(
+    await safe_reply(message, 
         dedent("""
         你好！
         把文件发给我，我会下载到这台电脑里。
@@ -211,17 +212,17 @@ async def start(_, message: Message):
 async def botHelp(_, message: Message):
     """查看帮助"""
     global bot_help
-    await message.reply(bot_help)
+    await safe_reply(message, bot_help)
 
 
 async def addByLink(_, message: Message):
     """用消息链接下载，可加名字：/add <链接> <名字>"""
     if not user:
-        await message.reply("还没有配置用户账号，没法读取这类消息。")
+        await safe_reply(message, "还没有配置用户账号，没法读取这类消息。")
         return
     parts = (message.text or "").split()
     if len(parts) < 2:
-        await message.reply(
+        await safe_reply(message, 
             "请发一条消息链接给我。\n"
             "示例：`/add https://t.me/c/1234567890/123`",
             parse_mode=ParseMode.MARKDOWN,
@@ -230,7 +231,7 @@ async def addByLink(_, message: Message):
 
     parsed = parse_message_link(parts[1])
     if not parsed:
-        await message.reply(LINK_HELP, parse_mode=ParseMode.MARKDOWN)
+        await safe_reply(message, LINK_HELP, parse_mode=ParseMode.MARKDOWN)
         return
 
     await download_handler.addFromLink(message, *parsed)
@@ -239,7 +240,7 @@ async def addByLink(_, message: Message):
 async def usage(_, message: Message):
     """查看磁盘空间"""
     usage = sysinfo.diskUsage(DL_FOLDER)
-    await message.reply(
+    await safe_reply(message, 
         dedent(f"""
             当前存储位置总容量 __{usage.capacity}__
             其中已用 __{usage.used}__，剩余 __{usage.free}__。
@@ -253,37 +254,37 @@ async def useFolder(_, message: Message):
     args = message.text.split()
     userSetPath = " ".join(args[1:]).strip()
     if not userSetPath:
-        await message.reply("还没有告诉我文件要放到哪个目录。")
+        await safe_reply(message, "还没有告诉我文件要放到哪个目录。")
         return
     path = userSetPath.replace("../", "").replace("/..", "")
     if userSetPath != path:
-        await message.reply(f"注意：实际目录是 `{path}`，不是 `{' '.join(args[1:])}`")
+        await safe_reply(message, f"注意：实际目录是 `{path}`，不是 `{' '.join(args[1:])}`")
     folder.set(path)
-    await message.reply(f"已切换到 `{path}`，直接发文件即可。")
+    await safe_reply(message, f"已切换到 `{path}`，直接发文件即可。")
 
 
 async def leaveFolder(_, message: Message):
     """回到根目录"""
     folder.reset()
-    await message.reply("已经回到根目录了。")
+    await safe_reply(message, "已经回到根目录了。")
 
 
 async def getFolder(_, message: Message):
     """查看当前下载目录"""
     path = folder.getPath()
-    await message.reply(f"当前目录是 `{path}`")
+    await safe_reply(message, f"当前目录是 `{path}`")
 
 
 async def showQueue(_, message: Message):
     """查看下载队列，可取消任务"""
     text, markup = queueview.render_queue()
-    await message.reply(text, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
+    await safe_reply(message, text, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
 
 
 async def pauseQueue(_, message: Message):
     """暂停接收新的下载任务"""
     set_paused(True)
-    await message.reply("已暂停：排队中的任务不会开始，进行中的会继续下完。发 /resume 恢复。")
+    await safe_reply(message, "已暂停：排队中的任务不会开始，进行中的会继续下完。发 /resume 恢复。")
 
 
 async def resumeQueue(_, message: Message):
@@ -292,4 +293,4 @@ async def resumeQueue(_, message: Message):
     text = "已恢复，排队中的任务会继续下载。"
     if released:
         text += f"磁盘满驻留的 {released} 个任务已重新排队。"
-    await message.reply(text)
+    await safe_reply(message, text)

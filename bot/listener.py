@@ -18,6 +18,7 @@ from bot.app import ADMINS, BASE_FOLDER, CONFIG_FOLDER, app, user
 from bot.download.groups import MediaGroupCollector
 from bot.download.handler import enqueue_messages
 from bot.download.state import download_event_listeners as _dl_event_listeners
+from bot.tg_io import Kind, safe_edit, safe_reply, safe_send
 from bot.download.names import media_file_size, message_media, sanitize_folder_name
 from bot import util
 from bot.util import clip_button_text, humanReadableSize
@@ -134,9 +135,13 @@ async def _flush_digest(d: Digest) -> None:
             if admin is None:
                 logging.warning("频道摘要无法发送：管理员会话不可用")
                 return
-            d.message = await app.send_message(admin, text, parse_mode=ParseMode.DISABLED)
+            d.message = await safe_send(
+                admin, text, important=True, parse_mode=ParseMode.DISABLED
+            )
         else:
-            await d.message.edit(text, parse_mode=ParseMode.DISABLED)
+            await safe_edit(
+                d.message, text, kind=Kind.NORMAL, important=True, parse_mode=ParseMode.DISABLED
+            )
     except Exception as exc:
         logging.debug("更新频道摘要失败：%s: %s", type(exc).__name__, exc)
 
@@ -399,7 +404,7 @@ async def listen(_, message: Message):
     频道需用户账号加入；条数不填为全部。"""
     parts = (message.text or "").split()
     if len(parts) < 2:
-        await message.reply(
+        await safe_reply(message, 
             "用法：`/listen <频道链接或@用户名> [历史条数]`\n"
             "历史条数不填默认回填全部历史。",
             parse_mode=ParseMode.MARKDOWN,
@@ -407,7 +412,7 @@ async def listen(_, message: Message):
         return
     # 监听与下载都走用户账号：账号必须加入频道，公开私有一样，机器人无需加入
     if user is None:
-        await message.reply("需先配置用户账号 PHONE_NUMBER。")
+        await safe_reply(message, "需先配置用户账号 PHONE_NUMBER。")
         return
     target = parse_listen_target(parts[1])
 
@@ -420,10 +425,10 @@ async def listen(_, message: Message):
 
     chat = await resolve()
     if chat is None:
-        await message.reply("找不到这个频道，或用户账号未加入。")
+        await safe_reply(message, "找不到这个频道，或用户账号未加入。")
         return
     if chat.type != ChatType.CHANNEL:
-        await message.reply("群组暂不支持。")
+        await safe_reply(message, "群组暂不支持。")
         return
     try:
         # get_chat_history 是异步生成器；能迭代就说明账号在频道里，哪怕频道为空没有消息
@@ -431,7 +436,7 @@ async def listen(_, message: Message):
             break
     except Exception:
         logging.warning("用户账号无法读取频道消息：%s", chat.id, exc_info=True)
-        await message.reply("用户账号未加入该频道。")
+        await safe_reply(message, "用户账号未加入该频道。")
         return
     title = chat.title or chat.username or str(chat.id)
     folder_name = sanitize_folder_name(title) or f"channel_{chat.id}"
@@ -479,7 +484,7 @@ async def listen(_, message: Message):
     reply_text = f"已开始监听 `{title}`：新帖子自动下载到文件夹 `{folder_name}/`。"
     if backfill_note:
         reply_text += backfill_note
-    await message.reply(reply_text, parse_mode=ParseMode.MARKDOWN)
+    await safe_reply(message, reply_text, parse_mode=ParseMode.MARKDOWN)
 
 
 async def _migrate_links() -> None:
@@ -536,7 +541,7 @@ async def listening(_, message: Message):
     """查看正在监听的频道"""
     await _migrate_links()
     text, markup = _render_listening()
-    await message.reply(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+    await safe_reply(message, text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
 
 
 async def handle_unlisten_callback(callback: CallbackQuery) -> None:
@@ -555,7 +560,7 @@ async def handle_unlisten_callback(callback: CallbackQuery) -> None:
         return
     text, markup = _render_listening()
     try:
-        await message.edit(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+        await safe_edit(message, text, kind=Kind.NORMAL, important=True, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
     except Exception as exc:
         logging.debug("更新监听面板失败：%s: %s", type(exc).__name__, exc)
 

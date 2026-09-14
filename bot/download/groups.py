@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 
 from pyrogram.types import Message, ReplyParameters
 
+from bot.tg_io import safe_send
+
 
 GROUP_FLUSH_DELAY = 1.2
 
@@ -51,9 +53,10 @@ class MediaGroupCollector:
                 if quiet:
                     notice = None
                 else:
-                    notice = await client.send_message(
+                    notice = await safe_send(
                         message.chat.id,
                         "收到一组文件，正在整理...",
+                        important=True,
                         reply_parameters=ReplyParameters(message_id=message.id),
                     )
                 pending = PendingGroup(messages=[message], notice=notice)

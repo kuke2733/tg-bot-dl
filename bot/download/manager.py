@@ -234,12 +234,21 @@ async def downloadFile(download: Download) -> None:
         else:
             await handle_download_exhausted(download, item, exc)
     except asyncio.CancelledError:
-        # 停止看门狗强制中断：按已停止收尾，确保临时文件被清理、消息有交代
-        logging.warning("下载 %s 被强制中断，按已停止处理", download.filename)
-        if download.batch:
-            await handle_stopped_download(download, item, save_path)
+        # 用户停止：按已停止收尾；进程重启等取消：保留 queue.json 与断点
+        user_stop = bool(
+            download.stopped
+            or download.id in stop
+            or (download.batch and download.batch.stopped)
+        )
+        if user_stop:
+            logging.warning("下载 %s 被强制中断，按已停止处理", download.filename)
+            if download.batch:
+                await handle_stopped_download(download, item, save_path)
+            else:
+                await finalize_single_stopped(download, save_path)
         else:
-            await finalize_single_stopped(download, save_path)
+            download.will_requeue = True
+            logging.warning("下载 %s 被取消但非用户停止，保留队列记录与断点", download.filename)
         raise
     except Exception:
         logging.exception("下载失败：%s", download.filename)
@@ -326,6 +335,8 @@ def createProgress(client: Client):
 
         async def _edit_progress():
             if download.stopped or download.ui_seq != seq:
+                return
+            if download.progress_message is None:
                 return
             await safe_edit(
                 download.progress_message,

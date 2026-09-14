@@ -18,6 +18,7 @@ from bot.download import store
 from bot.download.batches import finish_batch_item, refresh_batch
 from bot.download.names import replace_filename, unique_filename
 from bot.download.render import delete_message_later, safe_edit
+from bot.tg_io import safe_reply
 from bot.download.state import (
     HashPrompt,
     active_batches,
@@ -99,13 +100,23 @@ async def prompt_hash_duplicate(
             item.status = "content_duplicate"
             item.name = Path(download.filename).name
         await finish_batch_item(download.batch)
-        prompt_message = await download.batch.message.reply(
+        if download.batch.message is None:
+            logging.warning("批次无进度消息，跳过内容重复询问：%s", download.filename)
+            return
+        prompt_message = await safe_reply(
+            download.batch.message,
             f"`{Path(download.filename).name}`\n{HASH_DUP_TEXT}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=hash_duplicate_keyboard(token),
         )
+        if prompt_message is None:
+            logging.warning("内容重复询问发送失败：%s", download.filename)
+            return
     else:
         prompt_message = download.progress_message
+        if prompt_message is None:
+            logging.warning("无进度消息，跳过内容重复询问：%s", download.filename)
+            return
         await safe_edit(
             prompt_message,
             HASH_DUP_TEXT,

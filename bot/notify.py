@@ -6,7 +6,8 @@ from pathlib import Path
 
 from pyrogram.enums import ParseMode
 
-from bot.app import CONFIG_FOLDER, app
+from bot.app import CONFIG_FOLDER
+from bot.tg_io import safe_send
 from bot.util import admin_chat
 from bot.version import APP_NAME, VERSION
 
@@ -45,9 +46,10 @@ async def notify_version_update() -> None:
         logging.warning("版本更新提示未发送：管理员会话不可用，下次启动会重试")
         return
     try:
-        await app.send_message(
+        await safe_send(
             admin,
             f"{APP_NAME} 已更新：{last} → {VERSION}",
+            important=True,
             parse_mode=ParseMode.DISABLED,
         )
     except Exception:
@@ -68,9 +70,10 @@ async def notify_disk_full(filename: str) -> None:
         logging.warning("磁盘已满但管理员会话不可用，无法通知")
         return
     try:
-        await app.send_message(
+        await safe_send(
             admin,
             f"💾 磁盘已满：{filename} 的下载已暂停并保留断点。清理空间后发 /resume 继续。",
+            important=True,
             parse_mode=ParseMode.DISABLED,
         )
     except Exception:

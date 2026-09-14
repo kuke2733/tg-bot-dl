@@ -6,6 +6,7 @@ from pyrogram import Client
 from pyrogram.types import Message
 
 from bot.app import ADMINS, app
+from bot.tg_io import safe_reply
 
 KIB = 1024
 MIB = 1024 * KIB
@@ -99,7 +100,7 @@ def checkAdmins(func: Coroutine) -> Coroutine:
                 getattr(message.from_user, "id", None),
                 _identity_tokens(message),
             )
-            await message.reply("你不是管理员，不能使用这个机器人。")
+            await safe_reply(message, "你不是管理员，不能使用这个机器人。", important=False)
             return
         return await func(app, message)
 

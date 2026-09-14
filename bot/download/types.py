@@ -77,7 +77,7 @@ class Batch:
     id: str
     folder: str
     total: int
-    message: Message
+    message: Message | None
     directory: str = ""
     last_update: float = 0.0
     stopped: bool = False
@@ -114,7 +114,7 @@ class Download:
     id: int
     filename: str
     from_message: Message
-    progress_message: Message
+    progress_message: Message | None
     started: float = 0.0
     last_update: float = 0.0
     size: int = 0

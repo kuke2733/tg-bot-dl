@@ -17,25 +17,35 @@ _state: dict = {"batches": {}, "tasks": {}}
 
 
 def load() -> tuple[dict, dict]:
-    """启动时读取持久化队列，返回 (batches, tasks)。文件损坏时备份并从空开始。"""
+    """启动时读取持久化队列，返回 (batches, tasks)。文件损坏时尝试 .bak，再不行从空开始。"""
     global _state
     with _lock:
-        try:
-            raw = QUEUE_PATH.read_text(encoding="utf-8")
-            data = json.loads(raw) if raw.strip() else {}
-            _state = {
-                "batches": dict(data.get("batches") or {}),
-                "tasks": dict(data.get("tasks") or {}),
-            }
-        except FileNotFoundError:
-            _state = {"batches": {}, "tasks": {}}
-        except Exception:
-            logging.exception("读取持久化队列失败，已备份并从空队列开始")
+        paths = [QUEUE_PATH, QUEUE_PATH.with_suffix(".json.bak")]
+        for path in paths:
             try:
-                QUEUE_PATH.replace(QUEUE_PATH.with_suffix(".json.bak"))
-            except OSError:
-                pass
-            _state = {"batches": {}, "tasks": {}}
+                raw = path.read_text(encoding="utf-8")
+                data = json.loads(raw) if raw.strip() else {}
+                _state = {
+                    "batches": dict(data.get("batches") or {}),
+                    "tasks": dict(data.get("tasks") or {}),
+                }
+                if path != QUEUE_PATH:
+                    logging.warning("主队列文件不可用，已从备份恢复：%s", path.name)
+                    try:
+                        _save_locked()
+                    except Exception:
+                        logging.exception("写回主队列文件失败")
+                return dict(_state["batches"]), dict(_state["tasks"])
+            except FileNotFoundError:
+                continue
+            except Exception:
+                logging.exception("读取持久化队列失败：%s", path)
+                if path == QUEUE_PATH:
+                    try:
+                        QUEUE_PATH.replace(QUEUE_PATH.with_suffix(".json.bak"))
+                    except OSError:
+                        pass
+        _state = {"batches": {}, "tasks": {}}
         return dict(_state["batches"]), dict(_state["tasks"])
 
 

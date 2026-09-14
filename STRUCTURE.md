@@ -101,6 +101,7 @@ tg-bot-dl/
 │   ├── listener.py          /listen 频道监听自动下载与广告过滤、按频道聚合摘要
 │   ├── sysinfo.py           磁盘空间信息
 │   ├── util.py              管理员校验、文件大小/时间格式化、管理员会话解析
+│   ├── tg_io.py             Bot 出站消息门禁：FloodWait 落盘、串行队列、分层节拍
 │   └── download/
 │       ├── handler.py       收到文件后加入下载队列
 │       ├── names.py         文件名、后缀、分组文件夹命名
@@ -114,7 +115,7 @@ tg-bot-dl/
 │       ├── dedup.py         重复文件询问交互
 │       ├── restore.py       进程重启后的队列恢复
 │       ├── queueview.py     /queue 队列视图与取消回调
-│       ├── render.py        进度/批次面板的文本渲染与消息编辑辅助
+│       ├── render.py        进度/批次面板文案与键盘（safe_edit 再导出自 tg_io）
 │       ├── cleanup.py       停止后的文件清理与残留重试
 │       ├── persist.py       下载任务持久化（config/queue.json）与启动恢复
 │       ├── store.py         用 SQLite 记录已下载文件，避免重复下载
@@ -206,13 +207,15 @@ python start.py
 | `lifecycle.py` | 决定任务何时真正结束：手动停止和源消息删除才判死；短周期重试耗尽转长周期重排，5/15/30/60 分钟最多 4 轮，轮次用尽转冷驻留等连接恢复；磁盘写满驻留并暂停队列。含批次与单任务停止入口。 |
 | `batches.py` | 批次与任务进度消息编排：刷新、批次收尾含空目录清理、停止前的清理等待、开始下载提示。 |
 | `dedup.py` | 重复文件的两次询问：入队前唯一 ID 拦截弹窗、下载后内容哈希相同弹窗，以及继续/跳过/保留/删除四个决策。 |
-| `restore.py` | 进程重启后的队列恢复：读 `queue.json` 重建批次与任务、重取源消息，`.temp` 断点自动生效；无法恢复的顺带清理断点。 |
+| `restore.py` | 进程重启后的队列恢复：读 `queue.json` 重建批次与任务、重取源消息，`.temp` 断点自动生效；瞬时失败保留落盘，源消息确认消失才丢弃。 |
 | `queueview.py` | `/queue` 的队列视图：渲染任务列表、取消回调（复用 manager 的停止逻辑）。 |
-| `render.py` | 进度条、批次/条目状态文案、键盘按钮、限流冷却下的消息编辑——纯函数，manager 与 queueview 共用。 |
+| `render.py` | 进度条、批次/条目状态文案、键盘按钮；消息编辑走 `tg_io.safe_edit`（本模块再导出）。 |
 | `cleanup.py` | 停止后的文件/文件夹清理，句柄占用时的后台重试删除。 |
-| `persist.py` | 下载任务持久化到 `config/queue.json`（入队即落盘），进程重启后恢复任务并断点续传。 |
+| `persist.py` | 下载任务持久化到 `config/queue.json`（入队即落盘），损坏时尝试 `.bak`。 |
 | `store.py` | 本地 SQLite 记录 file_unique_id 和文件哈希，下载前/后拦截重复。 |
 | `types.py` | 单个下载任务、一组文件的共享状态，以及状态字和驻留原因的枚举。 |
+
+`bot/tg_io.py` 是 Bot 出站消息的统一入口（`safe_send` / `safe_reply` / `safe_edit`）：FloodWait 惩罚写入 `config/flood_until`，全局约 0.5s 串行，进度编辑约 2s、恢复消息约 1.25s。下载媒体通道不走这里。
 
 下载走的是 `bot/app.py` 里创建的同一个 Telegram 连接，因此配置了代理时，下载也会走代理。
 
@@ -233,6 +236,7 @@ python start.py
 | `config/TDownloader-user.session` | 用户账号登录状态 | 删除后要重新收验证码 |
 | `config/downloads.sqlite` | 已下载文件的查重记录 | 删除后无法拦截历史重复文件 |
 | `config/queue.json` | 未完成下载任务的落盘 | 空的时候会被自动重建 |
+| `config/flood_until` | 消息限流惩罚截止时间（unix） | 删除后立刻解除出站惩罚 |
 | `data/` | 下载完成的文件 | 删除只影响已下载文件 |
 
 ## 修改时看哪里
@@ -248,6 +252,7 @@ python start.py
 | 配置项有哪些 | `web/settings.py` |
 | 启动方式、代理、Telegram 客户端 | `bot/app.py` |
 | 下载进度、停止按钮 | `bot/download/render.py`、`bot/download/batches.py` |
+| Bot 发/改消息限流与 FloodWait | `bot/tg_io.py` |
 | 失败重试 / 断点保留 / 冷驻留 | `bot/download/lifecycle.py`、`bot/download/transfer.py` |
 | 重复文件询问文案与逻辑 | `bot/download/dedup.py` |
 | 共享状态字段 | `bot/download/state.py` |

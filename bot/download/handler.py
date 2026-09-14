@@ -20,6 +20,7 @@ from bot.download.dedup import (
     unique_duplicate_keyboard,
 )
 from bot.download.render import safe_edit
+from bot.tg_io import Kind, safe_reply, safe_send
 from bot.download.state import (
     active_batches,
     downloads,
@@ -79,11 +80,13 @@ async def _status_message(
     text: str,
     seed: Message | None = None,
     reply_markup: InlineKeyboardMarkup | None = None,
-) -> Message:
+) -> Message | None:
+    """发/改状态消息；失败返回 None，不抛。"""
     if seed is not None:
         ok = await safe_edit(
             seed,
             text,
+            kind=Kind.NORMAL,
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=reply_markup,
             important=True,
@@ -91,9 +94,13 @@ async def _status_message(
         if ok:
             return seed
         logging.debug("编辑状态消息失败，改为新发")
-    return await app.send_message(
-        target.chat.id,
+    chat_id = target.chat.id if target.chat else None
+    if chat_id is None:
+        return None
+    return await safe_send(
+        chat_id,
         text,
+        important=True,
         parse_mode=ParseMode.MARKDOWN,
         reply_parameters=ReplyParameters(message_id=target.id),
         reply_markup=reply_markup,
@@ -263,9 +270,10 @@ async def enqueue_file(
         size_text = f"（{humanReadableSize(size)}）" if size else ""
         logging.info("收到文件，加入下载队列：%s %s unique_id=%s", rel, size_text, unique_id or "-")
         if quiet:
-            progress = await app.send_message(
+            progress = await safe_send(
                 notice_chat_id,
                 f"📥 `{rel}`{size_text}",
+                important=True,
                 parse_mode=ParseMode.MARKDOWN,
             )
         else:
@@ -321,15 +329,19 @@ async def enqueue_messages(
     subfolder = unique_folder(folder_name, base_dir)
     if quiet:
         target = None
-        status = await app.send_message(
+        status = await safe_send(
             notice_chat_id,
             f"📥 相册 `{subfolder}`（{len(messages)} 个文件）",
+            important=True,
             parse_mode=ParseMode.MARKDOWN,
         )
     else:
         summary = f"{len(messages)} 个文件 → 文件夹 `{subfolder}`，回复本条可改名。"
         target = reply_to or messages[0]
         status = await _status_message(target, summary, notice)
+
+    if status is None:
+        logging.warning("相册状态消息发送失败，仍继续入队：%s", subfolder)
 
     batch = Batch(
         id=str(getattr(messages[0], "media_group_id", messages[0].id)),
@@ -370,11 +382,8 @@ async def addFile(_, message: Message) -> None:
             await enqueue_file(message, app, reply_to=message)
     except Exception:
         logging.exception("处理文件失败：%s", message.id)
-        try:
-            await message.reply("处理这个文件时出错了，请看日志。")
-        except Exception:
-            pass
-        raise
+        await safe_reply(message, "处理这个文件时出错了，请看日志。", important=False)
+        return
 
 
 async def addFromLink(link_message: Message, chat: int | str, message_id: int) -> None:
@@ -439,7 +448,8 @@ async def renameFromText(_, message: Message) -> None:
 
         if batch is not None:
             new_folder = await rename_batch_folder(batch, name)
-            await message.reply(
+            await safe_reply(
+                message,
                 f"文件夹已改为 `{new_folder}`。",
                 parse_mode=ParseMode.MARKDOWN,
             )
@@ -449,7 +459,8 @@ async def renameFromText(_, message: Message) -> None:
             return
         new_path = await apply_rename(download, name)
         note = " 下载完成后生效" if download.started else ""
-        await message.reply(
+        await safe_reply(
+            message,
             f"已重命名为 `{new_path}`{note}。",
             parse_mode=ParseMode.MARKDOWN,
         )

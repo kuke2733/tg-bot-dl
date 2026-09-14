@@ -55,7 +55,11 @@ async def dispatch(_, callback: CallbackQuery) -> None:
                 logging.exception("处理回调失败：%s", data)
                 try:
                     await callback.answer("操作失败，请重试")
-                except Exception:
-                    logging.debug("回调应答失败", exc_info=True)
+                except Exception as exc:
+                    # QUERY_ID_INVALID 等：用户侧已超时，不必刷堆栈
+                    logging.debug("回调应答失败：%s", type(exc).__name__)
             return
-    await callback.answer()
+    try:
+        await callback.answer()
+    except Exception as exc:
+        logging.debug("空回调应答失败：%s", type(exc).__name__)

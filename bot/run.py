@@ -72,12 +72,13 @@ async def main():
         logging.info("Starting normal user")
         await user.start()
         listener.register_user_channel_handler(user)
-    logging.info("Starting download manager...")
-    manager = asyncio.create_task(download_manager.run())
+    logging.info("Restoring saved download queue...")
     try:
         await restore.restore_saved_queue()
     except Exception:
         logging.exception("恢复上次下载队列失败")
+    logging.info("Starting download manager...")
+    manager = asyncio.create_task(download_manager.run())
     try:
         await notify.notify_version_update()
     except Exception:

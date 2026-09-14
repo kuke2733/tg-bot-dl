@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from pyrogram.client import Client
-from pyrogram.errors import MessageNotModified
 from pyrogram.enums.parse_mode import ParseMode
 from pyrogram.types import (
     CallbackQuery,
@@ -23,6 +22,7 @@ from bot.download import state
 from bot.download.lifecycle import finalize_queued_stopped
 from bot.download.state import mark_download_stopped, path_in_use
 from bot.download.store import delete_by_path
+from bot.tg_io import Kind, safe_edit, safe_reply
 from bot.util import clip_button_text, humanReadableSize
 
 # 一次最多展示的条目数量，避免消息和按钮超出 Telegram 限制
@@ -184,12 +184,16 @@ def build_dir_delete_confirm(view: FilesView) -> tuple[str, InlineKeyboardMarkup
 
 
 async def edit_view(message: Message, text: str, markup: InlineKeyboardMarkup | None) -> None:
-    try:
-        await message.edit(text, reply_markup=markup, parse_mode=ParseMode.DISABLED)
-    except MessageNotModified:
-        pass  # 列表内容没变化，比如点了刷新，不用处理
-    except Exception as exc:
-        logging.debug("更新文件管理消息失败：%s: %s", type(exc).__name__, exc)
+    ok = await safe_edit(
+        message,
+        text,
+        kind=Kind.NORMAL,
+        important=True,
+        reply_markup=markup,
+        parse_mode=ParseMode.DISABLED,
+    )
+    if not ok:
+        logging.debug("更新文件管理消息失败或被限流跳过")
 
 
 async def show_listing(message: Message, rel_dir: str) -> None:
@@ -374,15 +378,17 @@ async def handle_files_callback(callback: CallbackQuery) -> None:
 
 
 async def listFiles(client: Client, message: Message):
-    """浏览和删除已下载的文件"""
     view, text, markup = make_listing_view("")
-    sent = await message.reply(
+    sent = await safe_reply(
+        message,
         text,
+        important=True,
         reply_markup=markup,
         parse_mode=ParseMode.DISABLED,
         disable_web_page_preview=True,
     )
-    save_view(sent.id, view)
+    if sent is not None:
+        save_view(sent.id, view)
 
 
 # —— 按钮回调注册，协议前缀与路由见 bot/callbacks.py ——

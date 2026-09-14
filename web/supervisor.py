@@ -171,44 +171,54 @@ class BotSupervisor:
 
         with self.lock:
             running = self.proc is not None and self.proc.poll() is None
-            tracked = self.proc if running else None
+            if running and not restart:
+                return True, "机器人已在运行"
 
-        if running and not restart:
-            return True, "机器人已在运行"
-        if tracked:
-            self.stop()
-        else:
+            tracked = self.proc if running else None
+            self.proc = None
+            if tracked is not None and tracked.poll() is None:
+                try:
+                    self._kill_tree(psutil.Process(tracked.pid))
+                except (psutil.Error, OSError):
+                    try:
+                        tracked.kill()
+                        tracked.wait(timeout=3)
+                    except Exception as error:
+                        self.append(f"停止失败：{error}")
+                        self.proc = tracked
+                        return False, str(error)
+
             self.cleanup_orphans()
 
-        env = os.environ.copy()
-        for key in set(settings.BOT_KEYS + [key for key, *_ in settings.FIELDS]):
-            env.pop(key, None)
-        env.update(settings.bot_env(data))
-        env["PYTHONUNBUFFERED"] = "1"
+            env = os.environ.copy()
+            for key in set(settings.BOT_KEYS + [key for key, *_ in settings.FIELDS]):
+                env.pop(key, None)
+            env.update(settings.bot_env(data))
+            env["PYTHONUNBUFFERED"] = "1"
 
-        kwargs = {
-            "cwd": str(ROOT),
-            "env": env,
-            "stdin": PIPE,
-            "stdout": PIPE,
-            "stderr": STDOUT,
-            "text": True,
-            "encoding": "utf-8",
-            "errors": "replace",
-            "bufsize": 0,
-        }
-        if os.name == "nt":
-            kwargs["creationflags"] = CREATE_NEW_PROCESS_GROUP
-        else:
-            kwargs["start_new_session"] = True
+            kwargs = {
+                "cwd": str(ROOT),
+                "env": env,
+                "stdin": PIPE,
+                "stdout": PIPE,
+                "stderr": STDOUT,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+                "bufsize": 0,
+            }
+            if os.name == "nt":
+                kwargs["creationflags"] = CREATE_NEW_PROCESS_GROUP
+            else:
+                kwargs["start_new_session"] = True
 
-        proc = Popen([sys.executable, "-m", "bot.run"], **kwargs)
-        with self.lock:
+            proc = Popen([sys.executable, "-m", "bot.run"], **kwargs)
             self.proc = proc
             self.state = "starting"
             self.waiting_prompt = ""
             self.bot_username = ""
             self.exit_code = None
+
         self.append("正在启动机器人...")
         self.reader = threading.Thread(target=self._read, args=(proc,), daemon=True)
         self.reader.start()

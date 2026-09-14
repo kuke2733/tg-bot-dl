@@ -93,19 +93,40 @@ async def finalize_single_stopped(download: Download, save_path: str) -> None:
     emit_download_event("stopped", _event_info(download))
 
 
-async def finalize_queued_stopped(download: Download) -> None:
-    """取消还没开始传输的排队任务：立即收尾，不等它出队。"""
+def detach_for_cancel(download: Download) -> None:
+    """从排队/驻留里立刻摘掉并删持久化，不碰进度消息（留给后台慢慢改）。"""
+    mark_download_stopped(download)
     try:
         downloads.remove(download)
     except ValueError:
         pass
-    await finalize_single_stopped(download, str(Path(BASE_FOLDER) / download.filename))
+    if download.retry_task is not None and not download.retry_task.done():
+        download.retry_task.cancel()
+    unhold(download)
+    download.hold_aborted = True
+    pop_stop(download.id)
     try:
         queue_persist.remove_task(queue_persist.task_record(download)["key"])
     except Exception:
         logging.exception("移除持久化任务失败：%s", download.filename)
     unregister_rename_target(download)
     untrack_unique(download.unique_id)
+
+
+async def finalize_detached_stopped(download: Download) -> None:
+    """后台收尾：清断点、改进度文案。调用前须已 detach_for_cancel。"""
+    save_path = str(Path(BASE_FOLDER) / download.filename)
+    cleanup.cleanup_partial_download(save_path, download.filename)
+    await safe_edit(download.progress_message, STOPPED_TEXT, parse_mode=ParseMode.MARKDOWN, important=True)
+    if download.quiet:
+        asyncio.create_task(delete_message_later(download.progress_message))
+    emit_download_event("stopped", _event_info(download))
+
+
+async def finalize_queued_stopped(download: Download) -> None:
+    """取消还没开始传输的排队任务：立即收尾，不等它出队。"""
+    detach_for_cancel(download)
+    await finalize_detached_stopped(download)
 
 
 async def handle_stopped_download(download: Download, item, save_path: str) -> None:

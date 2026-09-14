@@ -8,15 +8,15 @@ from pyrogram.enums import ParseMode
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyParameters
 
 from bot import callbacks
-from bot.app import app
 from bot.download import lifecycle, state
 from bot.download.lifecycle import (
-    finalize_queued_stopped,
+    detach_for_cancel,
+    finalize_detached_stopped,
     handle_stop_single,
     stop_batch_now,
-    stop_held_download,
 )
 from bot.download.render import delete_message_later, safe_edit
+from bot.tg_io import safe_send
 from bot.download.state import (
     active_batches,
     active_downloads,
@@ -158,6 +158,15 @@ async def _stop_batch_in_background(target: Batch) -> None:
         logging.exception("停止批次失败：%s", target.id)
 
 
+async def _finalize_cancel_all_background(items: list) -> None:
+    """全部取消后：一条一条改「已停止」并清断点，走限流队列不堵面板。"""
+    for download in items:
+        try:
+            await finalize_detached_stopped(download)
+        except Exception:
+            logging.exception("全部取消后台收尾失败：%s", getattr(download, "filename", "?"))
+
+
 async def handle_queue_stop(callback: CallbackQuery, download_id: int) -> None:
     await handle_stop_single(callback, download_id)
     if callback.message is not None:
@@ -186,15 +195,15 @@ async def handle_queue_refresh(callback: CallbackQuery) -> None:
 
 async def handle_queue_goto(callback: CallbackQuery, chat_id: int, message_id: int) -> None:
     """在进度消息下方发一条带引用的定位消息，点引用即可跳转，几秒后自动删除。"""
-    try:
-        pointer = await app.send_message(
-            chat_id,
-            PROGRESS_POINTER_TEXT,
-            reply_parameters=ReplyParameters(message_id=message_id),
-            parse_mode=ParseMode.DISABLED,
-        )
-    except Exception:
-        logging.debug("发送进度定位消息失败", exc_info=True)
+    pointer = await safe_send(
+        chat_id,
+        PROGRESS_POINTER_TEXT,
+        important=True,
+        reply_parameters=ReplyParameters(message_id=message_id),
+        parse_mode=ParseMode.DISABLED,
+    )
+    if pointer is None:
+        logging.debug("发送进度定位消息失败")
         await callback.answer("进度消息已失效，可能已被删除")
         return
     await callback.answer("已发出定位消息，点它的引用跳转")
@@ -202,24 +211,41 @@ async def handle_queue_goto(callback: CallbackQuery, chat_id: int, message_id: i
 
 
 async def handle_cancel_all(callback: CallbackQuery) -> None:
-    """一键取消：停止并清空所有排队与下载中的任务，含批次。"""
+    """一键取消：内存先清空并立刻刷新面板，进度消息后台排队改成「已停止」。"""
+    try:
+        await callback.answer("已全部取消")
+    except Exception:
+        logging.debug("取消全部：回调应答失败（可能已超时）", exc_info=True)
+
+    pending_finalize: list = []
+
     for batch in list(active_batches.values()):
-        batch.stopped = True  # 面板即时隐藏该批次；文件清理在后台完成
+        batch.stopped = True
         asyncio.create_task(_stop_batch_in_background(batch))
+
     for download in list(downloads) + list(active_downloads):
         if download.batch is not None:
-            continue  # 批次内任务由 stop_batch_now 统一收尾
-        mark_download_stopped(download)
+            continue
         if download.task is None:
-            # 排队中还没开始传输：立即收尾，不等出队
-            await finalize_queued_stopped(download)
+            # 排队未开传：立刻从队列摘掉，消息后台收尾
+            detach_for_cancel(download)
+            pending_finalize.append(download)
+        else:
+            # 下载中：只打停止标记，由 downloadFile 收尾
+            mark_download_stopped(download)
+
     for download, _why in list(iter_holds()):
         if download.batch is not None:
-            continue  # 批次内驻留任务由 stop_batch_now 统一收尾
-        await stop_held_download(download)
-    await callback.answer("已全部取消")
+            continue
+        detach_for_cancel(download)
+        pending_finalize.append(download)
+
+    # 面板先变空，用户立刻看到效果
     if callback.message is not None:
         await refresh_queue_message(callback.message)
+
+    if pending_finalize:
+        asyncio.create_task(_finalize_cancel_all_background(pending_finalize))
 
 
 async def handle_queue_callback(callback: CallbackQuery) -> None:
