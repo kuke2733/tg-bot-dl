@@ -4,7 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 
-from pyrogram.types import Message
+from pyrogram.types import Message, ReplyParameters
 
 
 GROUP_FLUSH_DELAY = 1.2
@@ -54,7 +54,7 @@ class MediaGroupCollector:
                     notice = await client.send_message(
                         message.chat.id,
                         "收到一组文件，正在整理...",
-                        reply_to_message_id=message.id,
+                        reply_parameters=ReplyParameters(message_id=message.id),
                     )
                 pending = PendingGroup(messages=[message], notice=notice)
                 pending.token = object()

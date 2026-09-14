@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 
 from pyrogram.enums import ParseMode
-from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyParameters
 
 from bot import callbacks
 from bot.app import app
@@ -190,7 +190,7 @@ async def handle_queue_goto(callback: CallbackQuery, chat_id: int, message_id: i
         pointer = await app.send_message(
             chat_id,
             PROGRESS_POINTER_TEXT,
-            reply_to_message_id=message_id,
+            reply_parameters=ReplyParameters(message_id=message_id),
             parse_mode=ParseMode.DISABLED,
         )
     except Exception:

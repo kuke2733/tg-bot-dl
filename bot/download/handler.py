@@ -5,7 +5,7 @@ import os
 import time
 
 from pyrogram.enums.parse_mode import ParseMode
-from pyrogram.types import InlineKeyboardMarkup, Message
+from pyrogram.types import InlineKeyboardMarkup, Message, ReplyParameters
 
 from bot import folder
 from bot.app import BASE_FOLDER, app, user
@@ -95,7 +95,7 @@ async def _status_message(
         target.chat.id,
         text,
         parse_mode=ParseMode.MARKDOWN,
-        reply_to_message_id=target.id,
+        reply_parameters=ReplyParameters(message_id=target.id),
         reply_markup=reply_markup,
     )
 

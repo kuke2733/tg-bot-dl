@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 
 from pyrogram.enums import ParseMode
+from pyrogram.types import ReplyParameters
 
 from bot.app import BASE_FOLDER, app
 from bot.download import cleanup, persist as queue_persist
@@ -19,9 +20,10 @@ from bot.download.types import Batch, BatchItem, Download
 async def send_restore_message(chat_id: int, text: str, reply_to: int | None):
     """发恢复提示；源消息和提示在同一个会话时带上引用。引用发送失败就退回纯文本，不中断恢复。"""
     try:
-        return await app.send_message(
-            chat_id, text, parse_mode=ParseMode.MARKDOWN, reply_to_message_id=reply_to
-        )
+        kwargs = {}
+        if reply_to is not None:
+            kwargs["reply_parameters"] = ReplyParameters(message_id=reply_to)
+        return await app.send_message(chat_id, text, parse_mode=ParseMode.MARKDOWN, **kwargs)
     except Exception:
         if reply_to is None:
             return None
