@@ -325,12 +325,17 @@ def createProgress(client: Client):
         session_bytes = max(received - (download.resume_from or 0), 0)
         elapsed = max(now - download.started, 1)
         avg_speed = session_bytes / elapsed
+        download.received = received
+        download.speed = avg_speed
         if total and received < total and avg_speed > 0:
             tte = int((total - received) / avg_speed)
+            download.eta = tte
             speed_line = f"{humanReadableSize(avg_speed)}/s，预计还需 {humanReadableTime(tte)}"
         elif total and received >= total:
+            download.eta = 0
             speed_line = f"{humanReadableSize(avg_speed)}/s，即将完成"
         else:
+            download.eta = None
             speed_line = f"{humanReadableSize(avg_speed)}/s"
 
         seq = download.ui_seq

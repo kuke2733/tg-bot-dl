@@ -289,7 +289,8 @@
     .actions { display: flex; gap: 8px; flex-wrap: wrap; }
     .form-card,
     .verify-band,
-    .log-card {
+    .log-card,
+    .queue-card {
       background: var(--card);
       border-radius: var(--radius);
       box-shadow: var(--shadow-out);
@@ -537,6 +538,144 @@
     .filter-btn.success.active { color: var(--ok); }
     .filter-btn.info.active { color: var(--accent); }
     .filter-btn.debug.active { color: #7c3aed; }
+    .left-panel-tabs {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 12px;
+      padding: 4px;
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      box-shadow: var(--shadow-in-sm);
+      flex: none;
+    }
+    .left-tab {
+      flex: 1;
+      min-height: 36px;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      font-weight: 600;
+      cursor: pointer;
+      border-radius: calc(var(--radius-sm) - 2px);
+    }
+    .left-tab.active {
+      background: var(--surface);
+      color: var(--ink);
+      box-shadow: var(--shadow-out-sm);
+    }
+    .queue-card {
+      padding: 18px;
+      flex: 1;
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 0;
+    }
+    .left-panel[data-view="queue"] .log-card { display: none; }
+    .left-panel[data-view="queue"] .queue-card { display: flex; }
+    .left-panel[data-view="logs"] .log-card { display: flex; }
+    .left-panel[data-view="logs"] .queue-card { display: none; }
+    .queue-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    .queue-toolbar h2 {
+      margin: 0;
+      margin-right: auto;
+    }
+    .queue-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .queue-actions button {
+      min-height: 36px;
+      padding: 0 12px;
+      border: none;
+      background: var(--surface);
+      color: var(--ink);
+      font-weight: 600;
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+      box-shadow: var(--shadow-out-sm);
+    }
+    .queue-actions button.danger { color: var(--stop); }
+    .queue-hint {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .queue-list {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 4px;
+    }
+    .queue-item {
+      padding: 12px 14px;
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      box-shadow: var(--shadow-out-sm);
+    }
+    .queue-item-top {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .queue-item-meta {
+      flex: 1;
+      min-width: 0;
+    }
+    .queue-item-name {
+      font-weight: 650;
+      color: var(--ink);
+      word-break: break-all;
+    }
+    .queue-item-sub {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .queue-item-stop {
+      flex: none;
+      min-height: 32px;
+      padding: 0 10px;
+      border: none;
+      background: var(--surface);
+      color: var(--stop);
+      font-weight: 600;
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+      box-shadow: var(--shadow-out-sm);
+    }
+    .queue-bar {
+      height: 10px;
+      border-radius: 999px;
+      background: var(--surface);
+      box-shadow: var(--shadow-in-sm);
+      overflow: hidden;
+    }
+    .queue-bar > span {
+      display: block;
+      height: 100%;
+      width: 0;
+      border-radius: 999px;
+      background: var(--accent);
+    }
+    .queue-item.hold .queue-bar > span { background: var(--wait); }
+    .queue-empty {
+      margin: auto;
+      padding: 24px;
+      text-align: center;
+      color: var(--muted);
+    }
     pre {
       margin: 0;
       flex: 1;
@@ -683,8 +822,17 @@
         overflow: hidden;
         padding: 8px;
       }
-      .app-container[data-panel="logs"] .left-panel {
+      .app-container[data-panel="logs"] .left-panel,
+      .app-container[data-panel="queue"] .left-panel {
         display: flex;
+      }
+      .left-panel-tabs { display: none; }
+      .queue-card {
+        min-height: 0;
+        height: 100%;
+        padding: 14px;
+        border-radius: var(--radius);
+        overflow: hidden;
       }
       .app-container[data-panel="settings"] .right-panel {
         display: flex;
@@ -810,7 +958,7 @@
       }
       .mobile-nav {
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: 1fr 1fr 1fr;
         position: fixed;
         left: var(--safe-left);
         right: var(--safe-right);
@@ -940,8 +1088,12 @@
     <button class="mobile-verify-tip" id="mobileVerifyTip" type="button">需要验证码，点此前往设置</button>
 
     <div class="main-container">
-      <div class="left-panel" id="logsPanel">
-        <div class="log-card">
+      <div class="left-panel" id="logsPanel" data-view="logs">
+        <div class="left-panel-tabs" role="tablist">
+          <button class="left-tab active" type="button" data-view="logs" id="tabLogs">运行日志</button>
+          <button class="left-tab" type="button" data-view="queue" id="tabQueue">下载队列</button>
+        </div>
+        <div class="log-card" id="logView">
           <div class="log-header">
             <h2>运行日志</h2>
             <div class="log-status" id="logStatus">
@@ -957,6 +1109,18 @@
             </div>
           </div>
           <pre id="logs">等待状态...</pre>
+        </div>
+        <div class="queue-card" id="queueView">
+          <div class="queue-toolbar">
+            <h2>下载队列</h2>
+            <div class="queue-actions">
+              <button type="button" id="queuePauseBtn">暂停</button>
+              <button type="button" id="queueResumeBtn">恢复</button>
+              <button type="button" class="danger" id="queueCancelAllBtn">全部取消</button>
+            </div>
+          </div>
+          <p class="queue-hint" id="queueHint">加载中…</p>
+          <div class="queue-list" id="queueList"></div>
         </div>
       </div>
 
@@ -1045,6 +1209,10 @@
         <svg viewBox="0 0 24 24"><path d="M8 6h13"></path><path d="M8 12h13"></path><path d="M8 18h13"></path><path d="M3 6h.01"></path><path d="M3 12h.01"></path><path d="M3 18h.01"></path></svg>
         日志
       </button>
+      <button class="nav-item" type="button" data-panel="queue" id="navQueue">
+        <svg viewBox="0 0 24 24"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg>
+        队列
+      </button>
       <button class="nav-item" type="button" data-panel="settings" id="navSettings">
         <span class="nav-badge" id="navSettingsBadge" hidden></span>
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
@@ -1071,19 +1239,49 @@
     let isAuthorized = false;
     let currentLogFilter = "ALL";
     let autoOpenedVerify = false;
+    let queueTimer = null;
+    let queueBusy = false;
 
     function isMobileLayout() {
       return window.matchMedia("(max-width: 768px)").matches;
     }
 
+    function setLeftView(view) {
+      const panel = document.getElementById("logsPanel");
+      if (!panel || (view !== "logs" && view !== "queue")) return;
+      panel.dataset.view = view;
+      document.querySelectorAll(".left-tab").forEach((btn) => {
+        btn.classList.toggle("active", btn.getAttribute("data-view") === view);
+      });
+      if (view === "queue") {
+        refreshDownloads();
+        startQueuePolling();
+      } else {
+        stopQueuePolling();
+      }
+    }
+
     function setPanel(panel) {
       const app = document.getElementById("app");
-      if (!app || (panel !== "logs" && panel !== "settings")) return;
+      if (!app || (panel !== "logs" && panel !== "queue" && panel !== "settings")) return;
       app.dataset.panel = panel;
       document.querySelectorAll(".mobile-nav .nav-item").forEach((btn) => {
         btn.classList.toggle("active", btn.getAttribute("data-panel") === panel);
       });
+      if (panel === "logs" || panel === "queue") {
+        setLeftView(panel);
+      } else {
+        stopQueuePolling();
+      }
     }
+
+    document.querySelectorAll(".left-tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const view = btn.getAttribute("data-view");
+        setLeftView(view);
+        if (isMobileLayout()) setPanel(view);
+      });
+    });
 
     document.querySelectorAll(".mobile-nav .nav-item").forEach((btn) => {
       btn.addEventListener("click", () => setPanel(btn.getAttribute("data-panel")));
@@ -1097,6 +1295,165 @@
       if (!isMobileLayout()) {
         document.getElementById("app").classList.remove("needs-verify");
       }
+    });
+
+    function formatSize(bytes) {
+      const n = Number(bytes) || 0;
+      if (n >= 1024 * 1024 * 1024) return (n / (1024 * 1024 * 1024)).toFixed(1) + " GiB";
+      if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MiB";
+      if (n >= 1024) return (n / 1024).toFixed(1) + " KiB";
+      return n.toFixed(0) + " B";
+    }
+
+    function formatEta(seconds) {
+      if (seconds == null || seconds < 0) return "";
+      const s = Math.floor(seconds);
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const r = s % 60;
+      const parts = [];
+      if (h) parts.push(h + "小时");
+      if (m) parts.push(m + "分");
+      if (r || !parts.length) parts.push(r + "秒");
+      return parts.join(" ");
+    }
+
+    function phaseLabel(item) {
+      if (item.kind === "hold") {
+        if (item.hold_reason === "disk") return "磁盘已满";
+        if (item.hold_reason === "cold") return "等待网络";
+        if (item.hold_reason === "retry") return "等待重试";
+        return "驻留中";
+      }
+      if (item.phase === "downloading") return "下载中";
+      if (item.phase === "queued") return "排队中";
+      return item.phase || "";
+    }
+
+    function renderQueue(data) {
+      const hint = document.getElementById("queueHint");
+      const list = document.getElementById("queueList");
+      if (!hint || !list) return;
+
+      if (!data || data.available === false) {
+        hint.textContent = "机器人未启动或控制口不可用";
+        list.innerHTML = '<div class="queue-empty">启动机器人后可查看实时队列</div>';
+        return;
+      }
+
+      const paused = !!data.paused;
+      const total = data.total || (data.items || []).length;
+      hint.textContent = (paused ? "已暂停 · " : "") + "共 " + total + " 个任务"
+        + (data.truncated ? "（仅显示前 " + (data.items || []).length + " 个）" : "");
+
+      const items = data.items || [];
+      if (!items.length) {
+        list.innerHTML = '<div class="queue-empty">' + (paused ? "队列已暂停，暂无任务" : "当前没有排队或进行中的下载") + "</div>";
+        return;
+      }
+
+      list.innerHTML = items.map((item) => {
+        const pct = item.total > 0 ? Math.min(100, (item.received / item.total) * 100) : 0;
+        const stopAttr = item.kind === "batch"
+          ? ('data-batch-id="' + String(item.id).replace(/"/g, "&quot;") + '"')
+          : ('data-download-id="' + String(item.id).replace(/"/g, "&quot;") + '"');
+        const holdClass = item.kind === "hold" ? " hold" : "";
+        return '<div class="queue-item' + holdClass + '">'
+          + '<div class="queue-item-top">'
+          + '<div class="queue-item-meta">'
+          + '<div class="queue-item-name"></div>'
+          + '<div class="queue-item-sub"></div>'
+          + '</div>'
+          + '<button type="button" class="queue-item-stop" ' + stopAttr + '>停止</button>'
+          + '</div>'
+          + '<div class="queue-bar"><span style="width:' + pct.toFixed(1) + '%"></span></div>'
+          + '</div>';
+      }).join("");
+
+      Array.from(list.children).forEach((el, i) => {
+        const item = items[i];
+        if (!item) return;
+        const nameEl = el.querySelector(".queue-item-name");
+        const subEl = el.querySelector(".queue-item-sub");
+        const title = item.kind === "batch" ? ("📁 " + item.name) : item.name;
+        const pct = item.total > 0 ? Math.min(100, (item.received / item.total) * 100) : 0;
+        const sizeText = item.total
+          ? (formatSize(item.received) + " / " + formatSize(item.total) + " · " + pct.toFixed(1) + "%")
+          : (item.received ? ("已下载 " + formatSize(item.received)) : "等待开始");
+        const speedText = item.speed > 0 ? (formatSize(item.speed) + "/s") : "";
+        const etaText = item.eta != null && item.eta >= 0 ? ("还需 " + formatEta(item.eta)) : "";
+        const batchText = item.kind === "batch"
+          ? ("完成 " + (item.done || 0) + "/" + (item.count || 0))
+          : "";
+        nameEl.textContent = title;
+        subEl.textContent = [phaseLabel(item), batchText, sizeText, speedText, etaText].filter(Boolean).join(" · ");
+      });
+    }
+
+    async function refreshDownloads() {
+      if (queueBusy || !isAuthorized) return;
+      queueBusy = true;
+      try {
+        const res = await fetch("/api/downloads", { headers: { "Content-Type": "application/json" } });
+        const data = await res.json().catch(() => ({ available: false, items: [] }));
+        renderQueue(data);
+      } catch (err) {
+        renderQueue({ available: false, items: [] });
+      } finally {
+        queueBusy = false;
+      }
+    }
+
+    function startQueuePolling() {
+      if (queueTimer) return;
+      queueTimer = setInterval(() => {
+        const panel = document.getElementById("logsPanel");
+        const app = document.getElementById("app");
+        const onQueue = panel && panel.dataset.view === "queue"
+          && (!isMobileLayout() || (app && app.dataset.panel === "queue"));
+        if (onQueue && isAuthorized) refreshDownloads();
+      }, 1500);
+    }
+
+    function stopQueuePolling() {
+      if (!queueTimer) return;
+      clearInterval(queueTimer);
+      queueTimer = null;
+    }
+
+    async function queueAction(url) {
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok && data.available === false) {
+          renderQueue(data);
+          return;
+        }
+        if (!res.ok) throw new Error(data.message || data.error || "操作失败");
+        renderQueue(data);
+      } catch (err) {
+        const hint = document.getElementById("queueHint");
+        if (hint) hint.textContent = err.message || "操作失败";
+      }
+    }
+
+    document.getElementById("queuePauseBtn").addEventListener("click", () => queueAction("/api/downloads/pause"));
+    document.getElementById("queueResumeBtn").addEventListener("click", () => queueAction("/api/downloads/resume"));
+    document.getElementById("queueCancelAllBtn").addEventListener("click", () => {
+      if (!confirm("确定取消全部下载任务？")) return;
+      queueAction("/api/downloads/cancel-all");
+    });
+    document.getElementById("queueList").addEventListener("click", (e) => {
+      const btn = e.target.closest(".queue-item-stop");
+      if (!btn) return;
+      const batchId = btn.getAttribute("data-batch-id");
+      const downloadId = btn.getAttribute("data-download-id");
+      if (batchId) queueAction("/api/downloads/batch/" + encodeURIComponent(batchId) + "/stop");
+      else if (downloadId) queueAction("/api/downloads/" + encodeURIComponent(downloadId) + "/stop");
     });
 
     document.querySelectorAll(".password-field").forEach((wrap) => {
@@ -1207,6 +1564,11 @@
       if (data.authorized === true || isAuthorized) {
         isAuthorized = true;
         document.getElementById("login").classList.remove("show");
+        const left = document.getElementById("logsPanel");
+        if (left && left.dataset.view === "queue") {
+          startQueuePolling();
+          refreshDownloads();
+        }
       }
 
       document.getElementById("logoutBtn").style.display = data.has_password ? "inline-flex" : "none";

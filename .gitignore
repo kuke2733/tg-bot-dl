@@ -22,3 +22,4 @@ config/queue.json
 config/listening.json
 config/last_version
 config/flood_until
+config/panel.port

@@ -6,6 +6,7 @@ from flask import Flask, jsonify, render_template, request, session
 
 from bot.version import VERSION
 from web import settings, updates
+from web import panel_proxy
 from web.supervisor import supervisor
 
 ROOT = Path(__file__).resolve().parent
@@ -142,6 +143,66 @@ def api_input():
     text = (request.json or {}).get("text", "")
     ok, message = supervisor.send_input(text)
     return jsonify({"ok": ok, "message": message, "authorized": True, **supervisor.snapshot()})
+
+
+def _downloads_response(payload: dict, status: int):
+    response = jsonify(payload)
+    response.headers["Content-Type"] = "application/json; charset=utf-8"
+    return response, status
+
+
+@app.get("/api/downloads")
+def api_downloads():
+    denied = require_auth()
+    if denied:
+        return denied
+    payload, status = panel_proxy.call("list")
+    return _downloads_response(payload, status)
+
+
+@app.post("/api/downloads/pause")
+def api_downloads_pause():
+    denied = require_auth()
+    if denied:
+        return denied
+    payload, status = panel_proxy.call("pause")
+    return _downloads_response(payload, status)
+
+
+@app.post("/api/downloads/resume")
+def api_downloads_resume():
+    denied = require_auth()
+    if denied:
+        return denied
+    payload, status = panel_proxy.call("resume")
+    return _downloads_response(payload, status)
+
+
+@app.post("/api/downloads/cancel-all")
+def api_downloads_cancel_all():
+    denied = require_auth()
+    if denied:
+        return denied
+    payload, status = panel_proxy.call("cancel_all")
+    return _downloads_response(payload, status)
+
+
+@app.post("/api/downloads/<int:download_id>/stop")
+def api_downloads_stop(download_id: int):
+    denied = require_auth()
+    if denied:
+        return denied
+    payload, status = panel_proxy.call("stop", id=download_id)
+    return _downloads_response(payload, status)
+
+
+@app.post("/api/downloads/batch/<path:batch_id>/stop")
+def api_downloads_stop_batch(batch_id: str):
+    denied = require_auth()
+    if denied:
+        return denied
+    payload, status = panel_proxy.call("stop_batch", id=batch_id)
+    return _downloads_response(payload, status)
 
 
 def getenv_host() -> str:

@@ -140,3 +140,7 @@ class Download:
     will_requeue: bool = False
     # 驻留任务收尾单飞标记：停止/唤醒多条路径并发时只收尾一次
     hold_aborted: bool = False
+    # 面板实时进度（进度回调写入）
+    received: int = 0
+    speed: float = 0.0
+    eta: int | None = None

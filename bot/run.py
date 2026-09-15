@@ -8,6 +8,7 @@ from bot.app import app, user
 from bot import commands, listener, notify
 from bot.download import lifecycle, restore
 from bot.download import manager as download_manager
+from bot import panel_sock
 
 # 会话健康检查：连续失败达到阈值就重启连接。
 # 只重启连接、不动进程，下载队列和任务都还在内存里，传输会自动断点续传。
@@ -79,6 +80,7 @@ async def main():
         logging.exception("恢复上次下载队列失败")
     logging.info("Starting download manager...")
     manager = asyncio.create_task(download_manager.run())
+    panel = asyncio.create_task(panel_sock.serve())
     try:
         await notify.notify_version_update()
     except Exception:
@@ -89,7 +91,12 @@ async def main():
     await idle()
     logging.info("Stopping download manager...")
     monitor.cancel()
+    panel.cancel()
     manager.cancel()
+    try:
+        await panel
+    except asyncio.CancelledError:
+        pass
     logging.info("Stopping bot...")
     await app.stop()
     if user:
