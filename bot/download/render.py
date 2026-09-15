@@ -77,6 +77,8 @@ def item_speed_line(item: BatchItem) -> str:
     if item.total and item.received < item.total:
         tte = int((item.total - item.received) / avg_speed)
         return f"{humanReadableSize(avg_speed)}/s，预计还需 {humanReadableTime(tte)}"
+    if item.total and item.received >= item.total:
+        return f"{humanReadableSize(avg_speed)}/s，即将完成"
     return f"{humanReadableSize(avg_speed)}/s"
 
 

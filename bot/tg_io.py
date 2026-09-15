@@ -152,14 +152,15 @@ def _fail(job: _Job) -> Any:
     return False if job.op == "edit" else None
 
 
-async def _pace(kind: Kind) -> None:
+async def _pace(kind: Kind, *, important: bool = False) -> None:
     global _last_api, _last_progress, _last_restore
     now = time()
     gap = GLOBAL_INTERVAL - (now - _last_api)
-    if kind == Kind.PROGRESS:
-        gap = max(gap, PROGRESS_INTERVAL - (now - _last_progress))
-    elif kind == Kind.RESTORE:
-        gap = max(gap, RESTORE_INTERVAL - (now - _last_restore))
+    if not important:
+        if kind == Kind.PROGRESS:
+            gap = max(gap, PROGRESS_INTERVAL - (now - _last_progress))
+        elif kind == Kind.RESTORE:
+            gap = max(gap, RESTORE_INTERVAL - (now - _last_restore))
     if gap > 0:
         await asyncio.sleep(gap)
 
@@ -203,7 +204,7 @@ async def _run(job: _Job) -> Any:
     if job.op == "edit" and job.msg_key and _last_edit_text.get(job.msg_key) == job.text:
         return True
 
-    await _pace(job.kind)
+    await _pace(job.kind, important=job.important)
     try:
         if job.op == "send":
             result = await app.send_message(job.chat_id, job.text, **job.kwargs)
@@ -264,6 +265,15 @@ async def _pump() -> None:
             _worker = None
 
 
+def _drop_progress(key: tuple[int, int] | None) -> None:
+    """丢掉同消息上尚未发出的进度编辑，避免盖住完成/停止文案。"""
+    if key is None:
+        return
+    old = _progress.pop(key, None)
+    if old is not None:
+        _done(old.future, False)
+
+
 async def _enqueue(job: _Job) -> Any:
     global _worker
     _load_flood()
@@ -286,6 +296,7 @@ async def _enqueue(job: _Job) -> Any:
                 _progress_order.append(job.msg_key)
             _progress[job.msg_key] = job
         else:
+            _drop_progress(job.msg_key)
             _queue.append(job)
         if _worker is None or _worker.done():
             _worker = asyncio.create_task(_pump())

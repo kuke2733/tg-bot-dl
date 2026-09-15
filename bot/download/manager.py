@@ -92,6 +92,26 @@ async def finish_download_success(download: Download, item: BatchItem | None, re
     time_took = humanReadableTime(int(seconds_took))
     success_text = success_text_for(download, actual_size, time_took, speed)
 
+    # 大文件哈希可能较慢：先把进度钉到完成态，避免一直停在 99%
+    if download.batch is None and download.progress_message is not None:
+        await safe_edit(
+            download.progress_message,
+            dedent(
+                f"""
+                `{download.filename}`：
+                __{humanReadableSize(actual_size)}/{humanReadableSize(actual_size)} 100.00%
+                下载完成，正在校验...__
+                """
+            ),
+            parse_mode=ParseMode.MARKDOWN,
+            important=True,
+        )
+    elif download.batch and item is not None:
+        item.status = "downloading"
+        item.received = actual_size
+        item.total = actual_size
+        await refresh_batch(download.batch, force=True)
+
     sha256 = ""
     try:
         sha256 = await asyncio.to_thread(hash_file, result)
@@ -212,6 +232,7 @@ async def downloadFile(download: Download) -> None:
             on_retry=on_retry,
         )
         download.finalizing = True
+        download.ui_seq += 1
 
         if not isinstance(result, str):
             if item:
@@ -272,9 +293,15 @@ async def downloadFile(download: Download) -> None:
 
 def createProgress(client: Client):
     async def progress(received: int, total: int, download: Download) -> None:
-        if download.stopped or (download.batch and download.batch.stopped) or download.id in stop:
-            mark_download_stopped(download)
-            client.stop_transmission()
+        if (
+            download.finalizing
+            or download.stopped
+            or (download.batch and download.batch.stopped)
+            or download.id in stop
+        ):
+            if not download.finalizing:
+                mark_download_stopped(download)
+                client.stop_transmission()
             return
 
         # 进度用 create_task，避免 await 发消息拖慢下载
@@ -298,9 +325,11 @@ def createProgress(client: Client):
         session_bytes = max(received - (download.resume_from or 0), 0)
         elapsed = max(now - download.started, 1)
         avg_speed = session_bytes / elapsed
-        if total and avg_speed > 0:
+        if total and received < total and avg_speed > 0:
             tte = int((total - received) / avg_speed)
             speed_line = f"{humanReadableSize(avg_speed)}/s，预计还需 {humanReadableTime(tte)}"
+        elif total and received >= total:
+            speed_line = f"{humanReadableSize(avg_speed)}/s，即将完成"
         else:
             speed_line = f"{humanReadableSize(avg_speed)}/s"
 
@@ -317,7 +346,7 @@ def createProgress(client: Client):
             batch = download.batch
 
             async def _refresh():
-                if download.stopped or download.ui_seq != seq:
+                if download.finalizing or download.stopped or download.ui_seq != seq:
                     return
                 await refresh_batch(batch)
 
@@ -334,7 +363,7 @@ def createProgress(client: Client):
         markup = stop_keyboard(download.id)
 
         async def _edit_progress():
-            if download.stopped or download.ui_seq != seq:
+            if download.finalizing or download.stopped or download.ui_seq != seq:
                 return
             if download.progress_message is None:
                 return
