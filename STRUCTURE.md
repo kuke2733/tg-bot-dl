@@ -117,6 +117,7 @@ tg-bot-dl/
 │       ├── restore.py       进程重启后的队列恢复
 │       ├── queueview.py     /queue 队列视图与取消回调
 │       ├── render.py        进度/批次面板文案与键盘（safe_edit 再导出自 tg_io）
+│       ├── speed.py         下载中近 6 秒窗口实时速度；完成仍用全程均速
 │       ├── cleanup.py       停止后的文件清理与残留重试
 │       ├── persist.py       下载任务持久化（config/queue.json）与启动恢复
 │       ├── store.py         用 SQLite 记录已下载文件，避免重复下载
@@ -212,6 +213,7 @@ python start.py
 | `restore.py` | 进程重启后的队列恢复：读 `queue.json` 重建批次与任务、重取源消息，`.temp` 断点自动生效；瞬时失败保留落盘，源消息确认消失才丢弃。 |
 | `queueview.py` | `/queue` 的队列视图：渲染任务列表、取消回调（复用 manager 的停止逻辑）。 |
 | `render.py` | 进度条、批次/条目状态文案、键盘按钮；消息编辑走 `tg_io.safe_edit`（本模块再导出）。 |
+| `speed.py` | 下载中按近 6 秒滑动窗口算实时速度，完成仍按全程均速。 |
 | `cleanup.py` | 停止后的文件/文件夹清理，句柄占用时的后台重试删除。 |
 | `persist.py` | 下载任务持久化到 `config/queue.json`（入队即落盘），损坏时尝试 `.bak`。 |
 | `store.py` | 本地 SQLite 记录 file_unique_id 和文件哈希，下载前/后拦截重复。 |
