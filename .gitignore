@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 
+config/logs/
 config/settings.env
 config/web.secret
 config/*.session

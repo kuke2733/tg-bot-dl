@@ -1,4 +1,5 @@
 import atexit
+import logging
 import os
 import re
 import sys
@@ -23,6 +24,11 @@ PROMPTS = (
 )
 
 _PY_LOG = re.compile(r"^(DEBUG|INFO|WARNING|ERROR|CRITICAL):([^:]*):(.*)$", re.I)
+_WEB_LOG_LEVEL = {
+    "DEBUG": logging.DEBUG,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+}
 
 ROOT = Path(__file__).resolve().parent.parent
 CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -104,8 +110,11 @@ class BotSupervisor:
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         formatted_line = f"[{timestamp}] [{level}] {display}"
-        # 子进程输出进了管道，转到主进程给 docker logs
-        print(line, flush=True)
+        # 子进程日志转给 docker；面板自己的提示走 logging，避免和机器人落盘重复
+        if py or self.in_error_traceback:
+            print(line, flush=True)
+        else:
+            logging.getLogger("web").log(_WEB_LOG_LEVEL.get(level, logging.INFO), display)
 
         with self.lock:
             self.logs.append(formatted_line)

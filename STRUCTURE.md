@@ -92,6 +92,7 @@ tg-bot-dl/
 │
 ├── bot/                     Telegram 机器人
 │   ├── app.py               读取配置，创建 Telegram 连接
+│   ├── logsetup.py          按天落盘日志到 config/logs/
 │   ├── version.py           应用名、版本号、上报给 TG 的设备信息
 │   ├── run.py               机器人启动与退出
 │   ├── callbacks.py         按钮回调协议：前缀常量与注册制路由
@@ -182,6 +183,7 @@ python start.py
 
 | 文件 | 作用 |
 | :--- | :--- |
+| `bot/logsetup.py` | 按天写入 `config/logs/YYYY-MM-DD.log`，控制台格式留给面板解析；文件里去掉终端颜色码。 |
 | `bot/app.py` | 读取环境变量和 `config/settings.env`，创建机器人客户端 `app`，填了手机号再创建用户客户端 `user`。代理也在这里生效。 |
 | `bot/callbacks.py` | 按钮回调的前缀常量与注册制路由：各功能模块导入时注册处理器，dispatch 按前缀长度匹配。 |
 | `bot/version.py` | 应用名、版本号，以及上报给 Telegram 的设备信息。 |
@@ -237,6 +239,7 @@ python start.py
 | `config/downloads.sqlite` | 已下载文件的查重记录 | 删除后无法拦截历史重复文件 |
 | `config/queue.json` | 未完成下载任务的落盘 | 空的时候会被自动重建 |
 | `config/flood_until` | 消息限流惩罚截止时间（unix） | 删除后立刻解除出站惩罚 |
+| `config/logs/` | 按天落盘的运行日志 `YYYY-MM-DD.log` | 可删，默认保留 30 天 |
 | `data/` | 下载完成的文件 | 删除只影响已下载文件 |
 
 ## 修改时看哪里

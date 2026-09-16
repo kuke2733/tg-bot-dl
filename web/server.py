@@ -1,3 +1,4 @@
+import logging
 import os
 import signal
 from pathlib import Path
@@ -5,6 +6,7 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request, session
 
 from bot.version import VERSION
+from bot.logsetup import configure_logging
 from web import settings, updates
 from web import panel_proxy
 from web.supervisor import supervisor
@@ -222,6 +224,7 @@ def main():
     flask_debug = os.getenv("FLASK_DEBUG") or data.get("FLASK_DEBUG", "")
     debug = flask_debug.strip().lower() in ("1", "true", "yes", "on")
     manage_bot = _should_manage_bot(debug)
+    configure_logging(data["CONFIG_FOLDER"], debug=bool(data.get("DEBUG")))
 
     if manage_bot and not settings.missing_required(data):
         supervisor.start()
@@ -235,7 +238,7 @@ def main():
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, handle_stop)
 
-    print(f"Open config page: http://127.0.0.1:{port}", flush=True)
+    logging.info("配置页 http://127.0.0.1:%s", port)
     if debug:
-        print("Running in DEBUG mode with hot reload enabled", flush=True)
+        logging.info("Flask 调试热重载已开启")
     app.run(host=host, port=port, debug=debug, use_reloader=debug, threaded=True)

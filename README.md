@@ -62,7 +62,7 @@ pip install -r requirements.txt
 python start.py
 ```
 
-浏览器打开 http://127.0.0.1:8080 ，填入 API ID、API Hash、Bot Token 和管理员，需要代理就填，例如 `http://127.0.0.1:7890`，点「保存并生效」。下载文件在 `data/`，登录会话和面板配置在 `config/`。填了手机号的话，验证码会直接出现在网页里。
+浏览器打开 http://127.0.0.1:8080 ，填入 API ID、API Hash、Bot Token 和管理员，需要代理就填，例如 `http://127.0.0.1:7890`，点「保存并生效」。下载文件在 `data/`，登录会话和面板配置在 `config/`，运行日志按天写在 `config/logs/YYYY-MM-DD.log`（默认保留 30 天）。填了手机号的话，验证码会直接出现在网页里。
 
 ### Docker
 
@@ -91,7 +91,7 @@ services:
 docker compose up -d
 ```
 
-浏览器打开 http://127.0.0.1:8080 填写配置。下载文件在 `./data`，登录会话和面板配置在 `./config`。容器里代理填 `127.0.0.1` 会自动改写成宿主机地址 `host.docker.internal`。
+浏览器打开 http://127.0.0.1:8080 填写配置。下载文件在 `./data`，登录会话和面板配置在 `./config`，日志在 `./config/logs`。容器里代理填 `127.0.0.1` 会自动改写成宿主机地址 `host.docker.internal`。
 
 也可以用 GitHub Container Registry 的镜像：`ghcr.io/kuke2733/tg-bot-dl:latest`。
 
