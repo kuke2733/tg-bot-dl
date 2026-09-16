@@ -138,6 +138,8 @@ class Download:
     retry_task: asyncio.Task | None = None
     # True 时 downloadFile 收尾保留 queue.json 记录，用于驻留等待自动重试或磁盘恢复期间
     will_requeue: bool = False
+    # 队列暂停：停下当前传输并重新入队，断点留在 .temp
+    pausing: bool = False
     # 驻留任务收尾单飞标记：停止/唤醒多条路径并发时只收尾一次
     hold_aborted: bool = False
     # 面板实时进度（进度回调写入）

@@ -30,11 +30,12 @@ from bot.download.state import (
     pop_stop,
     rename_targets,
     resolve_batch_item,
-    stop,
     unhold,
     untrack_unique,
     unregister_rename_target,
     queue_download,
+    insert_paused_download,
+    is_user_stopped,
 )
 from bot.download.transfer import DownloadExhausted, prepare_temp_file, temp_path_for
 from bot.download.types import Batch, Download, HoldReason
@@ -48,7 +49,17 @@ STOPPED_TEXT = "已停止并删除"
 def set_paused(value: bool) -> int:
     state.paused = value
     if value:
+        targets = [download for download in list(state.active_downloads) if not is_user_stopped(download)]
+        if not state.pause_resume_ids:
+            state.pause_resume_ids = [download.id for download in targets]
+        for download in targets:
+            download.pausing = True
+            download.speed = 0.0
+            download.eta = None
         return 0
+    state.pause_resume_ids = []
+    for download in list(state.active_downloads) + list(downloads):
+        download.pausing = False
     return release_disk_holds()
 
 
@@ -62,7 +73,7 @@ def release_disk_holds() -> int:
     count = 0
     for download in targets:
         unhold(download)
-        if download.stopped or download.id in stop or (download.batch and download.batch.stopped):
+        if is_user_stopped(download):
             asyncio.create_task(abort_held_download(download))
             continue
         requeue_held(download)
@@ -81,6 +92,53 @@ def requeue_held(download: Download) -> None:
     download.last_update = 0.0
     download.ui_seq += 1
     queue_download(download)
+
+
+async def requeue_paused_download(download: Download, item) -> None:
+    """暂停时把进行中的任务退回队列，保留 .temp 断点。"""
+    download.will_requeue = True
+    download.pausing = False
+    download.task = None
+    download.started = 0.0
+    download.last_update = 0.0
+    download.speed = 0.0
+    download.eta = None
+    download.finalizing = False
+    download.ui_seq += 1
+    save_path = str(Path(BASE_FOLDER) / download.filename)
+    download.resume_from = prepare_temp_file(temp_path_for(save_path))
+    if download.received < download.resume_from:
+        download.received = download.resume_from
+    if item is not None:
+        item.status = "waiting"
+        item.received = download.received
+        item.resume_from = download.resume_from
+    insert_paused_download(download)
+    logging.info(
+        "下载已暂停并保留断点：%s（%s）",
+        download.filename,
+        humanReadableSize(download.resume_from) if download.resume_from else "0",
+    )
+    if download.batch is not None:
+        await refresh_batch(download.batch, force=True)
+        return
+    if download.progress_message is None:
+        return
+    if download.expected_size or download.size:
+        total = download.expected_size or download.size
+        received = min(download.received or download.resume_from or 0, total)
+        body = f"{humanReadableSize(received)}/{humanReadableSize(total)} 已暂停"
+    elif download.received or download.resume_from:
+        body = f"已暂停，已下载 {humanReadableSize(download.received or download.resume_from)}"
+    else:
+        body = "已暂停"
+    await safe_edit(
+        download.progress_message,
+        f"`{download.filename}`：\n__{body}__",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=stop_keyboard(download.id),
+        important=True,
+    )
 
 
 async def finalize_single_stopped(download: Download, save_path: str) -> None:
@@ -196,7 +254,7 @@ async def stop_held_download(download: Download) -> None:
 async def handle_download_exhausted(download: Download, item, exc: DownloadExhausted) -> None:
     """短周期重试耗尽：保留 .temp 断点，安排下一轮长周期自动重试；轮次用尽转冷驻留。"""
     save_path = str(Path(BASE_FOLDER) / download.filename)
-    if download.stopped or download.id in stop or (download.batch and download.batch.stopped):
+    if is_user_stopped(download):
         await handle_stopped_download(download, item, save_path)
         return
     if download.retry_round >= len(LONG_RETRY_DELAYS):
@@ -300,7 +358,7 @@ async def _long_retry_wait(download: Download, delay: float) -> None:
         return
     unhold(download)
     download.retry_task = None
-    if download.stopped or download.id in stop or (download.batch and download.batch.stopped):
+    if is_user_stopped(download):
         await abort_held_download(download)
         return
     source = await refetch_source_message(download)
@@ -322,7 +380,7 @@ async def wake_cold_holds() -> int:
         return 0
     woke = 0
     for download, _why in targets:
-        if download.stopped or download.id in stop or (download.batch and download.batch.stopped):
+        if is_user_stopped(download):
             await abort_held_download(download)
             continue
         source = await refetch_source_message(download)
@@ -340,7 +398,7 @@ async def wake_cold_holds() -> int:
 async def handle_disk_full(download: Download, item) -> None:
     """磁盘写满：保留断点、暂停队列并通知管理员，等 /resume 恢复。"""
     save_path = str(Path(BASE_FOLDER) / download.filename)
-    if download.stopped or download.id in stop or (download.batch and download.batch.stopped):
+    if is_user_stopped(download):
         await handle_stopped_download(download, item, save_path)
         return
     download.will_requeue = True

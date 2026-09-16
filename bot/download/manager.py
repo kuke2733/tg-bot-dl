@@ -22,6 +22,7 @@ from bot.download.lifecycle import (
     handle_download_exhausted,
     handle_download_failure,
     handle_stopped_download,
+    requeue_paused_download,
 )
 from bot.download.names import replace_filename, unique_filename, with_media_extension
 from bot.download.render import MIN_EDIT_INTERVAL, delete_message_later, safe_edit, stop_keyboard, success_text_for
@@ -32,12 +33,13 @@ from bot.download.state import (
     emit_download_event,
     mark_download_stopped,
     resolve_batch_item,
-    stop,
     untrack_unique,
     unregister_rename_target,
+    is_user_stopped,
+    should_pause,
 )
 from bot.download.store import find_by_sha256, hash_file, init as init_store, remember
-from bot.download.transfer import DownloadExhausted, download_with_resume, prepare_temp_file, temp_path_for
+from bot.download.transfer import DownloadExhausted, PauseTransmission, download_with_resume, prepare_temp_file, temp_path_for
 from bot.download.types import BatchItem, Download
 from bot.util import humanReadableSize, humanReadableTime
 
@@ -198,8 +200,12 @@ async def downloadFile(download: Download) -> None:
     save_path = str(Path(BASE_FOLDER) / download.filename)
 
     try:
-        if download.id in stop or (download.batch and download.batch.stopped):
+        if is_user_stopped(download):
             await handle_stopped_download(download, item, save_path)
+            return
+
+        if should_pause(download):
+            await requeue_paused_download(download, item)
             return
 
         await start_download_progress(download, item)
@@ -230,17 +236,22 @@ async def downloadFile(download: Download) -> None:
             progress_args=(download,),
             file_size=download.expected_size or download.size,
             on_retry=on_retry,
+            pause_check=lambda: should_pause(download),
         )
         download.finalizing = True
         download.ui_seq += 1
 
         if not isinstance(result, str):
+            user_stop = is_user_stopped(download)
+            if not user_stop and should_pause(download):
+                download.finalizing = False
+                await requeue_paused_download(download, item)
+                return
             if item:
-                stopped = download.stopped or (download.batch and download.batch.stopped)
-                item.status = "stopped" if stopped else "failed"
+                item.status = "stopped" if user_stop else "failed"
             if download.batch:
                 await finish_batch_item(download.batch)
-            elif download.stopped or download.id in stop:
+            elif user_stop:
                 await finalize_single_stopped(download, save_path)
             else:
                 await handle_download_failure(download, item)
@@ -256,11 +267,7 @@ async def downloadFile(download: Download) -> None:
             await handle_download_exhausted(download, item, exc)
     except asyncio.CancelledError:
         # 用户停止：按已停止收尾；进程重启等取消：保留 queue.json 与断点
-        user_stop = bool(
-            download.stopped
-            or download.id in stop
-            or (download.batch and download.batch.stopped)
-        )
+        user_stop = is_user_stopped(download)
         if user_stop:
             logging.warning("下载 %s 被强制中断，按已停止处理", download.filename)
             if download.batch:
@@ -286,23 +293,24 @@ async def downloadFile(download: Download) -> None:
                 queue_persist.remove_task(queue_persist.task_record(download)["key"])
             except Exception:
                 logging.exception("移除持久化任务失败：%s", download.filename)
-        unregister_rename_target(download)
-        untrack_unique(download.unique_id)
+            unregister_rename_target(download)
+            untrack_unique(download.unique_id)
         running -= 1
 
 
 def createProgress(client: Client):
     async def progress(received: int, total: int, download: Download) -> None:
-        if (
-            download.finalizing
-            or download.stopped
-            or (download.batch and download.batch.stopped)
-            or download.id in stop
-        ):
+        if download.finalizing or is_user_stopped(download):
             if not download.finalizing:
                 mark_download_stopped(download)
                 client.stop_transmission()
             return
+
+        if should_pause(download):
+            download.pausing = True
+            download.speed = 0.0
+            download.eta = None
+            raise PauseTransmission
 
         # 进度用 create_task，避免 await 发消息拖慢下载
         now = time()

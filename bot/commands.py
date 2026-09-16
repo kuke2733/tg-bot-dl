@@ -16,6 +16,7 @@ from bot.app import DL_FOLDER, user
 from bot import folder, listener, sysinfo
 from bot.download import handler as download_handler
 from bot.download import queueview
+from bot.download.lifecycle import set_paused
 from bot.filebrowser import listFiles
 from bot.tg_io import safe_reply
 from bot.util import checkAdmins
@@ -182,7 +183,7 @@ async def set_menu(app: Client):
             BotCommand("use", "设置下载子目录"),
             BotCommand("get", "查看当前目录"),
             BotCommand("leave", "回到根目录"),
-            BotCommand("pause", "暂停接收新任务"),
+            BotCommand("pause", "暂停下载队列"),
             BotCommand("resume", "恢复下载队列"),
             BotCommand("usage", "查看磁盘空间"),
             BotCommand("help", "查看帮助"),
@@ -282,15 +283,15 @@ async def showQueue(_, message: Message):
 
 
 async def pauseQueue(_, message: Message):
-    """暂停接收新的下载任务"""
+    """暂停下载队列：进行中的停下并保留断点，排队任务暂不开始"""
     set_paused(True)
-    await safe_reply(message, "已暂停：排队中的任务不会开始，进行中的会继续下完。发 /resume 恢复。")
+    await safe_reply(message, "已暂停：进行中的任务会停下并保留断点，排队任务暂不开始。发 /resume 恢复。")
 
 
 async def resumeQueue(_, message: Message):
     """恢复下载队列"""
     released = set_paused(False)
-    text = "已恢复，排队中的任务会继续下载。"
+    text = "已恢复，暂停的任务会从断点继续下载。"
     if released:
         text += f"磁盘满驻留的 {released} 个任务已重新排队。"
     await safe_reply(message, text)

@@ -36,7 +36,7 @@ PROGRESS_POINTER_TEXT = "⬆️ 上面是这条任务的下载进度，点引用
 
 def _download_queue_line(download) -> str:
     name = Path(download.filename).name
-    icon = "⬇️" if download.started else "⏳"
+    icon = "⏸" if state.paused else ("⬇️" if download.started else "⏳")
     size = download.expected_size or download.size
     size_text = f"（{humanReadableSize(size)}）" if size else ""
     return f"{icon} `{clip_button_text(name, 60)}`{size_text}"
@@ -44,7 +44,7 @@ def _download_queue_line(download) -> str:
 
 def _batch_queue_line(batch: Batch) -> str:
     total = len(batch.items) or batch.total
-    icon = "⬇️" if any(item.status == "downloading" for item in batch.items) else "⏳"
+    icon = "⏸" if state.paused else ("⬇️" if any(item.status == "downloading" for item in batch.items) else "⏳")
     return f"{icon} 📁 `{clip_button_text(batch.folder, 60)}`（完成 {batch.done}/{total}）"
 
 

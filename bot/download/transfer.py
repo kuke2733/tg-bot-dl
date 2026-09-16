@@ -34,6 +34,10 @@ _FILE_REF_ERRORS = (
 )
 
 
+class PauseTransmission(Exception):
+    """队列暂停：中断当前传输，保留 .temp 断点。"""
+
+
 class DownloadExhausted(RuntimeError):
     """短周期重试耗尽；.temp 已保留，由上层安排长周期自动重试。"""
 
@@ -95,6 +99,7 @@ async def _download_once(
     file_size: int,
     progress,
     progress_args: tuple,
+    pause_check=None,
 ) -> None:
     file_id, media_size = resolve_file_id(message)
     total_size = file_size or media_size
@@ -115,6 +120,9 @@ async def _download_once(
     if total_size and existing >= total_size:
         return
 
+    if pause_check and pause_check():
+        raise PauseTransmission
+
     offset_chunks = existing // CHUNK_SIZE
     mode = "ab" if existing else "wb"
 
@@ -130,6 +138,8 @@ async def _download_once(
             if not chunk:
                 break
             file.write(chunk)
+            if pause_check and pause_check():
+                raise PauseTransmission
 
 
 def _backoff_seconds(attempt: int) -> float:
@@ -145,6 +155,7 @@ async def download_with_resume(
     progress_args: tuple = (),
     file_size: int = 0,
     on_retry: RetryCallback | None = None,
+    pause_check=None,
 ) -> tuple[str | None, Message]:
     """下载到 save_path；失败保留 .temp 续传。停止时返回 (None, message)。"""
     temp_path = temp_path_for(save_path)
@@ -161,8 +172,11 @@ async def download_with_resume(
                 file_size=file_size,
                 progress=progress,
                 progress_args=progress_args,
+                pause_check=pause_check,
             )
             break
+        except PauseTransmission:
+            return None, message
         except StopTransmission:
             try:
                 if os.path.isfile(temp_path):

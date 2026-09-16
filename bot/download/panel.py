@@ -35,7 +35,10 @@ def _file_item(download: Download, phase: str, hold_reason: str | None = None) -
         received = min(received, total)
     speed = float(download.speed or 0.0)
     eta = download.eta
-    if eta is None and total and received < total and speed > 0:
+    if phase == "paused":
+        speed = 0.0
+        eta = None
+    elif eta is None and total and received < total and speed > 0:
         eta = int((total - received) / speed)
     return {
         "id": download.id,
@@ -56,20 +59,28 @@ def _file_item(download: Download, phase: str, hold_reason: str | None = None) -
 def _batch_item(batch: Batch) -> dict:
     count = len(batch.items) or batch.total
     downloading = [item for item in batch.items if item.status == "downloading"]
-    received = sum(item.received for item in downloading) if downloading else 0
-    total = sum(item.total for item in downloading) if downloading else 0
+    paused = bool(state.paused)
+    progress_items = downloading
+    if paused and not progress_items:
+        progress_items = [item for item in batch.items if item.received or item.total]
+    received = sum(item.received for item in progress_items) if progress_items else 0
+    total = sum(item.total for item in progress_items) if progress_items else 0
     speed = 0.0
     eta = None
-    phase = "downloading" if downloading else "queued"
-    # 批次速度：用正在下的条目估算
-    now = time.time()
-    for item in downloading:
-        if item.started and item.total:
-            session = max(item.received - (item.resume_from or 0), 0)
-            elapsed = max(now - item.started, 1)
-            speed += session / elapsed
-    if total and received < total and speed > 0:
-        eta = int((total - received) / speed)
+    if paused:
+        phase = "paused"
+    elif downloading:
+        phase = "downloading"
+        now = time.time()
+        for item in downloading:
+            if item.started and item.total:
+                session = max(item.received - (item.resume_from or 0), 0)
+                elapsed = max(now - item.started, 1)
+                speed += session / elapsed
+        if total and received < total and speed > 0:
+            eta = int((total - received) / speed)
+    else:
+        phase = "queued"
     return {
         "id": batch.id,
         "kind": "batch",
@@ -86,27 +97,60 @@ def _batch_item(batch: Batch) -> dict:
     }
 
 
+def _visible_file(download: Download) -> bool:
+    return download.batch is None and not download.stopped and download.id not in stop
+
+
+def _append_batches(items: list[dict]) -> None:
+    for batch in active_batches.values():
+        if not batch.stopped:
+            items.append(_batch_item(batch))
+
+
+def _paused_files() -> list[Download]:
+    by_id: dict[int, Download] = {}
+    for download in list(active_downloads) + list(downloads):
+        if _visible_file(download):
+            by_id.setdefault(download.id, download)
+    ordered: list[Download] = []
+    for download_id in state.pause_resume_ids:
+        download = by_id.pop(download_id, None)
+        if download is not None:
+            ordered.append(download)
+    for download in downloads:
+        leftover = by_id.pop(download.id, None)
+        if leftover is not None:
+            ordered.append(leftover)
+    ordered.extend(by_id.values())
+    return ordered
+
+
 def snapshot() -> dict:
     items: list[dict] = []
+    seen_ids: set[int] = set()
+    queue_paused = bool(state.paused)
 
-    for download in active_downloads:
-        if download.batch is not None or download.stopped or download.id in stop:
-            continue
-        items.append(_file_item(download, "downloading"))
+    def add_file(download: Download, phase: str) -> None:
+        if not _visible_file(download) or download.id in seen_ids:
+            return
+        seen_ids.add(download.id)
+        items.append(_file_item(download, phase))
 
-    for batch in active_batches.values():
-        if batch.stopped:
-            continue
-        items.append(_batch_item(batch))
-
-    for download in downloads:
-        if download.batch is not None or download.stopped or download.id in stop:
-            continue
-        items.append(_file_item(download, "queued"))
+    if queue_paused:
+        _append_batches(items)
+        for download in _paused_files():
+            add_file(download, "paused")
+    else:
+        for download in active_downloads:
+            add_file(download, "paused" if download.pausing else "downloading")
+        _append_batches(items)
+        for download in downloads:
+            add_file(download, "queued")
 
     for download, reason in iter_holds():
-        if download.batch is not None or download.stopped or download.id in stop:
+        if download.id in seen_ids or not _visible_file(download):
             continue
+        seen_ids.add(download.id)
         items.append(_file_item(download, "hold", hold_reason=str(reason)))
 
     truncated = max(0, len(items) - QUEUE_MAX_ROWS)

@@ -24,8 +24,10 @@ from bot.download.types import Batch, BatchItem, Download, HoldReason
 downloads: list[Download] = []
 active_downloads: list[Download] = []
 stop: list[int] = []
-# /pause 暂停出队，进行中的继续，/resume 恢复
+# /pause 暂停出队并停下进行中的传输（保留断点），/resume 恢复
 paused = False
+# 本次暂停瞬间仍在传输的任务 id，退回队列时插到队头并保持这个顺序
+pause_resume_ids: list[int] = []
 
 # ---- 批次 ----
 active_batches: dict[str, Batch] = {}
@@ -115,6 +117,19 @@ def queue_download(download: Download) -> None:
         logging.exception("持久化下载任务失败：%s", download.filename)
 
 
+def insert_paused_download(download: Download) -> None:
+    """暂停退回队列时插到队头，并保持暂停瞬间的进行中顺序。"""
+    if download in downloads:
+        return
+    rank = {download_id: index for index, download_id in enumerate(pause_resume_ids)}
+    my_rank = rank.get(download.id)
+    if my_rank is None:
+        insert_at = sum(1 for item in downloads if item.id in rank)
+    else:
+        insert_at = sum(1 for item in downloads if rank.get(item.id, my_rank + 1) < my_rank)
+    downloads.insert(insert_at, download)
+
+
 def emit_download_event(kind: str, info: dict) -> None:
     for callback in list(download_event_listeners):
         try:
@@ -156,6 +171,18 @@ def pop_stop(download_id: int) -> None:
         stop.remove(download_id)
     except ValueError:
         pass
+
+
+def is_user_stopped(download: Download) -> bool:
+    return bool(
+        download.stopped
+        or download.id in stop
+        or (download.batch and download.batch.stopped)
+    )
+
+
+def should_pause(download: Download) -> bool:
+    return paused or download.pausing
 
 
 def hold_download(download: Download, reason: HoldReason) -> None:
