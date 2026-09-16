@@ -19,6 +19,7 @@ from bot.download.batches import finish_batch_item, refresh_batch, wait_for_batc
 from bot.download.render import delete_message_later, safe_edit, stop_keyboard
 from bot.download.state import (
     active_batches,
+    active_downloads,
     downloads,
     emit_download_event,
     _event_info,
@@ -49,16 +50,15 @@ STOPPED_TEXT = "已停止并删除"
 def set_paused(value: bool) -> int:
     state.paused = value
     if value:
-        targets = [download for download in list(state.active_downloads) if not is_user_stopped(download)]
+        targets = [download for download in list(active_downloads) if not is_user_stopped(download)]
         if not state.pause_resume_ids:
             state.pause_resume_ids = [download.id for download in targets]
         for download in targets:
             download.pausing = True
-            download.speed = 0.0
-            download.eta = None
+            download.reset_speed()
         return 0
     state.pause_resume_ids = []
-    for download in list(state.active_downloads) + list(downloads):
+    for download in list(active_downloads) + list(downloads):
         download.pausing = False
     return release_disk_holds()
 
@@ -90,6 +90,7 @@ def requeue_held(download: Download) -> None:
     download.will_requeue = False
     download.started = 0.0
     download.last_update = 0.0
+    download.reset_speed()
     download.ui_seq += 1
     queue_download(download)
 
@@ -101,8 +102,7 @@ async def requeue_paused_download(download: Download, item) -> None:
     download.task = None
     download.started = 0.0
     download.last_update = 0.0
-    download.speed = 0.0
-    download.eta = None
+    download.reset_speed()
     download.finalizing = False
     download.ui_seq += 1
     save_path = str(Path(BASE_FOLDER) / download.filename)
@@ -113,6 +113,8 @@ async def requeue_paused_download(download: Download, item) -> None:
         item.status = "waiting"
         item.received = download.received
         item.resume_from = download.resume_from
+        item.speed = 0.0
+        item.eta = None
     insert_paused_download(download)
     logging.info(
         "下载已暂停并保留断点：%s（%s）",
@@ -436,11 +438,10 @@ async def stop_batch_now(target: Batch) -> None:
     """停止一个批次并清理其文件；只负责停止本身，不回复回调。"""
     target.stopped = True
     target.pending_unique.clear()
-    for item in list(downloads):
-        if item.batch and item.batch.id == target.id:
-            mark_download_stopped(item)
-    for item in list(rename_targets.values()):
-        if item.batch and item.batch.id == target.id:
+    seen: set[int] = set()
+    for item in list(downloads) + list(active_downloads) + list(rename_targets.values()):
+        if item.batch and item.batch.id == target.id and item.id not in seen:
+            seen.add(item.id)
             mark_download_stopped(item)
     for waiter in held_in_batch(target.id):
         # 驻留中的批次成员也要一并停止并清除记录
@@ -448,6 +449,9 @@ async def stop_batch_now(target: Batch) -> None:
     for batch_item in target.items:
         if batch_item.status in {"waiting", "downloading"}:
             batch_item.status = "stopped"
+            batch_item.speed = 0.0
+            batch_item.eta = None
+    await refresh_batch(target, force=True)
 
     if not await wait_for_batch_cleanup(target.id):
         logging.warning("批次 %s 等待超时，强制清理", target.id)
@@ -465,14 +469,26 @@ async def stop_batch_now(target: Batch) -> None:
         queue_persist.remove_batch(target.id)
 
 
+async def _stop_batch_bg(target: Batch) -> None:
+    try:
+        await stop_batch_now(target)
+    except Exception:
+        logging.exception("停止批次失败：%s", target.id)
+
+
+def schedule_stop_batch(target: Batch) -> None:
+    target.stopped = True
+    asyncio.create_task(_stop_batch_bg(target))
+
+
 async def handle_stop_batch(callback: CallbackQuery, batch_id: str) -> None:
     target = active_batches.get(batch_id)
-    if target is None:
+    if target is None or target.stopped:
         await callback.answer("该批次已完成或不存在")
         return
 
     await callback.answer("正在停止...")
-    await stop_batch_now(target)
+    schedule_stop_batch(target)
 
 
 async def handle_stop_single(callback: CallbackQuery, download_id: int) -> None:

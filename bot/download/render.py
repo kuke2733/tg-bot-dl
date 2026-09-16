@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from textwrap import dedent
-from time import time
 
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -21,6 +20,7 @@ __all__ = [
     "stop_keyboard",
     "progress_bar",
     "item_speed_line",
+    "live_speed_line",
     "render_item",
     "render_batch",
     "success_text_for",
@@ -66,20 +66,23 @@ def progress_bar(percent: float, width: int = 10) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
+def live_speed_line(speed: float, eta: int | None, total: int = 0, received: int = 0) -> str:
+    if speed <= 0:
+        return "即将完成" if total and received >= total else ""
+    text = f"{humanReadableSize(speed)}/s"
+    if total and received < total:
+        if eta is None:
+            eta = int((total - received) / speed)
+        return f"{text}，预计还需 {humanReadableTime(eta)}"
+    if total and received >= total:
+        return f"{text}，即将完成"
+    return text
+
+
 def item_speed_line(item: BatchItem) -> str:
-    if item.status != "downloading" or not item.started or not item.received:
+    if item.status != "downloading":
         return ""
-    elapsed = max(time() - item.started, 1)
-    session_bytes = max(item.received - (item.resume_from or 0), 0)
-    avg_speed = session_bytes / elapsed
-    if avg_speed <= 0:
-        return ""
-    if item.total and item.received < item.total:
-        tte = int((item.total - item.received) / avg_speed)
-        return f"{humanReadableSize(avg_speed)}/s，预计还需 {humanReadableTime(tte)}"
-    if item.total and item.received >= item.total:
-        return f"{humanReadableSize(avg_speed)}/s，即将完成"
-    return f"{humanReadableSize(avg_speed)}/s"
+    return live_speed_line(item.speed or 0.0, item.eta, item.total, item.received)
 
 
 def render_item(item: BatchItem) -> str:

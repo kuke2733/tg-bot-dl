@@ -21,11 +21,20 @@ from bot.download.lifecycle import (
     handle_disk_full,
     handle_download_exhausted,
     handle_download_failure,
+    handle_stop_batch,
+    handle_stop_single,
     handle_stopped_download,
     requeue_paused_download,
 )
 from bot.download.names import replace_filename, unique_filename, with_media_extension
-from bot.download.render import MIN_EDIT_INTERVAL, delete_message_later, safe_edit, stop_keyboard, success_text_for
+from bot.download.render import (
+    MIN_EDIT_INTERVAL,
+    delete_message_later,
+    live_speed_line,
+    safe_edit,
+    stop_keyboard,
+    success_text_for,
+)
 from bot.download.state import (
     _event_info,
     active_downloads,
@@ -38,6 +47,7 @@ from bot.download.state import (
     is_user_stopped,
     should_pause,
 )
+from bot.download.speed import eta_seconds
 from bot.download.store import find_by_sha256, hash_file, init as init_store, remember
 from bot.download.transfer import DownloadExhausted, PauseTransmission, download_with_resume, prepare_temp_file, temp_path_for
 from bot.download.types import BatchItem, Download
@@ -85,7 +95,7 @@ async def finish_download_success(download: Download, item: BatchItem | None, re
             "下载完成校验失败：%s 预期 %d 字节，实际 %d 字节",
             download.filename, download.expected_size, actual_size,
         )
-        cleanup_partial_download(result, download.filename)
+        cleanup.cleanup_partial_download(result, download.filename)
         note = f"大小不符（预期 {humanReadableSize(download.expected_size)}，实际 {humanReadableSize(actual_size)}），已删除"
         await handle_download_failure(download, item, note=note)
         return
@@ -211,8 +221,14 @@ async def downloadFile(download: Download) -> None:
         await start_download_progress(download, item)
         download.resume_from = prepare_temp_file(temp_path_for(save_path))
         download.started = time()
+        download.reset_speed()
+        if download.resume_from:
+            download.meter.update(download.resume_from, download.started)
 
         async def on_retry(attempt: int, exc: BaseException, resumed: int) -> None:
+            download.reset_speed()
+            if resumed:
+                download.meter.update(resumed, time())
             logging.warning(
                 "续传 %s（第 %d 次）：%s，已有 %s",
                 download.filename,
@@ -280,7 +296,7 @@ async def downloadFile(download: Download) -> None:
         raise
     except Exception:
         logging.exception("下载失败：%s", download.filename)
-        cleanup_partial_download(save_path, download.filename)
+        cleanup.cleanup_partial_download(save_path, download.filename)
         await handle_download_failure(download, item)
     finally:
         try:
@@ -308,15 +324,10 @@ def createProgress(client: Client):
 
         if should_pause(download):
             download.pausing = True
-            download.speed = 0.0
-            download.eta = None
+            download.reset_speed()
             raise PauseTransmission
 
-        # 进度用 create_task，避免 await 发消息拖慢下载
         now = time()
-        if download.last_update != 0 and (now - download.last_update) < MIN_EDIT_INTERVAL:
-            return
-        download.last_update = now
         expected = download.expected_size or 0
         if expected and (not total or total > expected * 2):
             total = expected
@@ -326,36 +337,35 @@ def createProgress(client: Client):
             download.size = total
         if total:
             received = min(received, total)
+        instant = download.meter.update(received, now)
+        download.received = received
+        download.speed = instant
+        download.eta = eta_seconds(received, total, instant)
+
+        item = resolve_batch_item(download)
+        if item is not None:
+            item.status = "downloading"
+            item.name = Path(download.filename).name
+            item.received = received
+            item.total = total
+            item.started = download.started or item.started or now
+            item.resume_from = download.resume_from
+            item.speed = instant
+            item.eta = download.eta
+
+        # 进度用 create_task，避免 await 发消息拖慢下载；速度采样不节流
+        if download.last_update != 0 and (now - download.last_update) < MIN_EDIT_INTERVAL:
+            return
+        download.last_update = now
+        if total:
             percent = received / total * 100
             size_line = f"{humanReadableSize(received)}/{humanReadableSize(total)} {percent:0.2f}%"
         else:
             size_line = f"已下载 {humanReadableSize(received)}"
-        session_bytes = max(received - (download.resume_from or 0), 0)
-        elapsed = max(now - download.started, 1)
-        avg_speed = session_bytes / elapsed
-        download.received = received
-        download.speed = avg_speed
-        if total and received < total and avg_speed > 0:
-            tte = int((total - received) / avg_speed)
-            download.eta = tte
-            speed_line = f"{humanReadableSize(avg_speed)}/s，预计还需 {humanReadableTime(tte)}"
-        elif total and received >= total:
-            download.eta = 0
-            speed_line = f"{humanReadableSize(avg_speed)}/s，即将完成"
-        else:
-            download.eta = None
-            speed_line = f"{humanReadableSize(avg_speed)}/s"
+        speed_line = live_speed_line(instant, download.eta, total, received)
 
         seq = download.ui_seq
         if download.batch:
-            item = resolve_batch_item(download)
-            if item is not None:
-                item.status = "downloading"
-                item.name = Path(download.filename).name
-                item.received = received
-                item.total = total
-                item.started = download.started or item.started or now
-                item.resume_from = download.resume_from
             batch = download.batch
 
             async def _refresh():
@@ -366,11 +376,11 @@ def createProgress(client: Client):
             asyncio.create_task(_refresh())
             return
 
+        body = f"{size_line}\n{speed_line}" if speed_line else size_line
         text = dedent(
             f"""
             `{download.filename}`：
-            __{size_line}
-            {speed_line}__
+            __{body}__
             """
         )
         markup = stop_keyboard(download.id)

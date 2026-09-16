@@ -13,7 +13,7 @@ from bot.download.lifecycle import (
     detach_for_cancel,
     finalize_detached_stopped,
     handle_stop_single,
-    stop_batch_now,
+    schedule_stop_batch,
 )
 from bot.download.render import delete_message_later, safe_edit
 from bot.tg_io import safe_send
@@ -151,13 +151,6 @@ async def refresh_queue_message(message: Message) -> None:
     await safe_edit(message, text, parse_mode=ParseMode.MARKDOWN, reply_markup=markup, important=True)
 
 
-async def _stop_batch_in_background(target: Batch) -> None:
-    try:
-        await stop_batch_now(target)
-    except Exception:
-        logging.exception("停止批次失败：%s", target.id)
-
-
 async def _finalize_cancel_all_background(items: list) -> None:
     """全部取消后：一条一条改「已停止」并清断点，走限流队列不堵面板。"""
     for download in items:
@@ -181,8 +174,7 @@ async def handle_queue_stop_batch(callback: CallbackQuery, batch_id: str) -> Non
         await callback.answer("正在停止...")
         # 先打上停止标记再刷新面板：后台任务还没跑到置位那一步时，
         # 这一帧渲染仍会把该批次画出来，看起来就像面板没刷新
-        target.stopped = True
-        asyncio.create_task(_stop_batch_in_background(target))
+        schedule_stop_batch(target)
     if callback.message is not None:
         await refresh_queue_message(callback.message)
 
@@ -220,8 +212,7 @@ async def handle_cancel_all(callback: CallbackQuery) -> None:
     pending_finalize: list = []
 
     for batch in list(active_batches.values()):
-        batch.stopped = True
-        asyncio.create_task(_stop_batch_in_background(batch))
+        schedule_stop_batch(batch)
 
     for download in list(downloads) + list(active_downloads):
         if download.batch is not None:

@@ -7,6 +7,8 @@ from enum import StrEnum
 from pyrogram.client import Client
 from pyrogram.types import Message
 
+from bot.download.speed import SpeedMeter
+
 class Status(StrEnum):
     """批次条目/下载任务的状态字。StrEnum：与裸字符串比较/入集合都兼容。"""
 
@@ -70,6 +72,8 @@ class BatchItem:
     total: int = 0
     started: float = 0.0
     resume_from: int = 0
+    speed: float = 0.0
+    eta: int | None = None
 
 
 @dataclass
@@ -146,3 +150,12 @@ class Download:
     received: int = 0
     speed: float = 0.0
     eta: int | None = None
+    meter: SpeedMeter = field(default_factory=SpeedMeter)
+
+    def reset_speed(self) -> None:
+        self.meter.reset()
+        self.speed = 0.0
+        self.eta = None
+        if self.batch_item is not None:
+            self.batch_item.speed = 0.0
+            self.batch_item.eta = None

@@ -11,9 +11,10 @@ from bot.download.lifecycle import (
     detach_for_cancel,
     finalize_detached_stopped,
     finalize_queued_stopped,
-    stop_batch_now,
+    schedule_stop_batch,
     stop_held_download,
 )
+from bot.download.speed import eta_seconds
 from bot.download.queueview import QUEUE_MAX_ROWS
 from bot.download.state import (
     active_batches,
@@ -38,8 +39,11 @@ def _file_item(download: Download, phase: str, hold_reason: str | None = None) -
     if phase == "paused":
         speed = 0.0
         eta = None
-    elif eta is None and total and received < total and speed > 0:
-        eta = int((total - received) / speed)
+    elif phase == "downloading":
+        speed = download.meter.speed_at(time.time())
+        eta = eta_seconds(received, total, speed)
+    elif eta is None:
+        eta = eta_seconds(received, total, speed)
     return {
         "id": download.id,
         "kind": "hold" if hold_reason else "file",
@@ -73,12 +77,12 @@ def _batch_item(batch: Batch) -> dict:
         phase = "downloading"
         now = time.time()
         for item in downloading:
-            if item.started and item.total:
-                session = max(item.received - (item.resume_from or 0), 0)
-                elapsed = max(now - item.started, 1)
-                speed += session / elapsed
-        if total and received < total and speed > 0:
-            eta = int((total - received) / speed)
+            live = find_download_by_id(item.download_id)
+            if live is not None:
+                speed += live.meter.speed_at(now)
+            else:
+                speed += float(item.speed or 0.0)
+        eta = eta_seconds(received, total, speed)
     else:
         phase = "queued"
     return {
@@ -184,24 +188,15 @@ async def stop_batch(batch_id: str) -> dict:
     target = active_batches.get(str(batch_id))
     if target is None or target.stopped:
         return {"ok": False, "error": "not_found", **snapshot()}
-    target.stopped = True
-    asyncio.create_task(_stop_batch_bg(target))
+    schedule_stop_batch(target)
     return {"ok": True, **snapshot()}
-
-
-async def _stop_batch_bg(target: Batch) -> None:
-    try:
-        await stop_batch_now(target)
-    except Exception:
-        logging.exception("面板停止批次失败：%s", target.id)
 
 
 async def cancel_all() -> dict:
     pending_finalize: list[Download] = []
 
     for batch in list(active_batches.values()):
-        batch.stopped = True
-        asyncio.create_task(_stop_batch_bg(batch))
+        schedule_stop_batch(batch)
 
     for download in list(downloads) + list(active_downloads):
         if download.batch is not None:
