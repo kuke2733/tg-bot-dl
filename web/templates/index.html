@@ -784,7 +784,14 @@
         padding-right: var(--safe-right);
       }
       header {
-        margin: calc(var(--page-pad-x) + var(--safe-top)) var(--bar-inset) 0;
+        position: relative;
+        top: auto;
+        margin: var(--page-pad-x) var(--bar-inset) 0;
+      }
+      @media (display-mode: standalone), (display-mode: fullscreen) {
+        header {
+          margin-top: calc(var(--page-pad-x) + env(safe-area-inset-top, 0px));
+        }
       }
       .header-row {
         min-width: 0;
