@@ -278,8 +278,10 @@ async def getFolder(_, message: Message):
 
 async def showQueue(_, message: Message):
     """查看下载队列，可取消任务"""
-    text, markup = queueview.render_queue()
-    await safe_reply(message, text, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
+    text, markup, page = queueview.render_queue()
+    sent = await safe_reply(message, text, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
+    if sent is not None:
+        queueview.remember_page(sent.id, page)
 
 
 async def pauseQueue(_, message: Message):

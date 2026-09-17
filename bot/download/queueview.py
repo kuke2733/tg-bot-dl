@@ -28,10 +28,14 @@ from bot.download.state import (
 from bot.download.types import Batch
 from bot.util import clip_button_text, humanReadableSize
 
-QUEUE_MAX_ROWS = 50
+# 每页任务数：每条最多 2 个按钮，加上顶栏/翻页，远低于 Telegram 100 按钮上限
+QUEUE_PAGE_SIZE = 8
+MAX_QUEUE_VIEWS = 100
 # 定位消息存留的秒数：足够点引用跳转，随后自动删除
 PROGRESS_POINTER_LIFETIME = 15.0
 PROGRESS_POINTER_TEXT = "⬆️ 上面是这条任务的下载进度，点引用跳转。"
+# 队列面板消息 id -> 当前页，刷新/停止后留在同一页
+_queue_pages: dict[int, int] = {}
 
 
 def _download_queue_line(download) -> str:
@@ -62,6 +66,21 @@ def _hold_queue_line(download, kind: str) -> str:
     return f"❄️ `{clip_button_text(name, 60)}`{size_text} 等待网络恢复"
 
 
+def remember_page(message_id: int | None, page: int) -> None:
+    if message_id is None:
+        return
+    _queue_pages.pop(message_id, None)
+    _queue_pages[message_id] = page
+    while len(_queue_pages) > MAX_QUEUE_VIEWS:
+        _queue_pages.pop(next(iter(_queue_pages)))
+
+
+def page_for(message_id: int | None) -> int:
+    if message_id is None:
+        return 0
+    return _queue_pages.get(message_id, 0)
+
+
 def _goto_button(target: Message | None) -> InlineKeyboardButton | None:
     """进度消息的定位按钮；拿不到所在会话就不给按钮。"""
     chat_id = target.chat.id if target is not None and target.chat else None
@@ -70,7 +89,7 @@ def _goto_button(target: Message | None) -> InlineKeyboardButton | None:
     return InlineKeyboardButton("📍 进度", callback_data=f"qgoto {chat_id} {target.id}")
 
 
-def render_queue() -> tuple[str, InlineKeyboardMarkup | None]:
+def render_queue(page: int = 0) -> tuple[str, InlineKeyboardMarkup | None, int]:
     running = [
         download
         for download in active_downloads
@@ -132,22 +151,42 @@ def render_queue() -> tuple[str, InlineKeyboardMarkup | None]:
 
     if not rows:
         if state.paused:
-            return "⏸ 下载队列已暂停，发 /resume 恢复。", None
-        return "当前没有排队或进行中的下载任务。", None
+            return "⏸ 下载队列已暂停，发 /resume 恢复。", None, 0
+        return "当前没有排队或进行中的下载任务。", None, 0
 
-    shown = rows[:QUEUE_MAX_ROWS]
-    lines = [f"📋 下载队列（共 {len(rows)} 个任务）" + ("  ⏸ 已暂停" if state.paused else "")]
+    pages = max(1, (len(rows) + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE)
+    page = max(0, min(int(page), pages - 1))
+    start = page * QUEUE_PAGE_SIZE
+    shown = rows[start : start + QUEUE_PAGE_SIZE]
+    paused = "  ⏸ 已暂停" if state.paused else ""
+    if pages > 1:
+        header = f"📋 下载队列（共 {len(rows)} 个任务 · 第 {page + 1}/{pages} 页）{paused}"
+    else:
+        header = f"📋 下载队列（共 {len(rows)} 个任务）{paused}"
+    lines = [header]
     lines += [line for line, _, _ in shown]
-    if len(rows) > QUEUE_MAX_ROWS:
-        lines.append(f"…还有 {len(rows) - QUEUE_MAX_ROWS} 个任务未显示")
-    keyboard = [[cancel, goto] if goto else [cancel] for _, cancel, goto in shown]
-    keyboard.append([InlineKeyboardButton("🔄 刷新", callback_data="qref"),
-                     InlineKeyboardButton("🧹 全部取消", callback_data="qcancelall")])
-    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
+    # 刷新/全部取消放顶上，避免任务按钮把它们挤出屏幕或超出 100 按钮上限
+    keyboard = [[
+        InlineKeyboardButton("🔄 刷新", callback_data="qref"),
+        InlineKeyboardButton("🧹 全部取消", callback_data="qcancelall"),
+    ]]
+    keyboard += [[cancel, goto] if goto else [cancel] for _, cancel, goto in shown]
+    if pages > 1:
+        nav: list[InlineKeyboardButton] = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"qpage {page - 1}"))
+        if page < pages - 1:
+            nav.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"qpage {page + 1}"))
+        if nav:
+            keyboard.append(nav)
+    return "\n".join(lines), InlineKeyboardMarkup(keyboard), page
 
 
-async def refresh_queue_message(message: Message) -> None:
-    text, markup = render_queue()
+async def refresh_queue_message(message: Message, page: int | None = None) -> None:
+    if page is None:
+        page = page_for(getattr(message, "id", None))
+    text, markup, page = render_queue(page)
+    remember_page(getattr(message, "id", None), page)
     await safe_edit(message, text, parse_mode=ParseMode.MARKDOWN, reply_markup=markup, important=True)
 
 
@@ -250,8 +289,17 @@ async def handle_queue_callback(callback: CallbackQuery) -> None:
         await handle_queue_goto(callback, int(chat_id), int(message_id))
     elif data == "qcancelall":
         await handle_cancel_all(callback)
-    elif data == "qref":
+    elif data == "qref" or data.startswith("qref "):
         await handle_queue_refresh(callback)
+    elif data.startswith("qpage "):
+        try:
+            page = int(data.split()[-1])
+        except ValueError:
+            await callback.answer("页码无效")
+            return
+        await callback.answer()
+        if callback.message is not None:
+            await refresh_queue_message(callback.message, page)
 
 
 # —— 按钮回调注册，协议前缀与路由见 bot/callbacks.py ——
@@ -260,3 +308,4 @@ callbacks.on(callbacks.Q_STOP)(handle_queue_callback)
 callbacks.on(callbacks.Q_GOTO)(handle_queue_callback)
 callbacks.on(callbacks.Q_REFRESH)(handle_queue_callback)
 callbacks.on(callbacks.Q_CANCEL_ALL)(handle_queue_callback)
+callbacks.on(callbacks.Q_PAGE)(handle_queue_callback)

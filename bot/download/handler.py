@@ -114,14 +114,22 @@ def _link_override(message: Message) -> str | None:
     return " ".join(parts[2:]).strip() or None
 
 
+def _persist_download(download: Download) -> None:
+    try:
+        queue_persist.add_task(queue_persist.task_record(download))
+    except Exception:
+        logging.exception("持久化改名失败：%s", download.filename)
+
+
 async def apply_rename(download: Download, raw_name: str) -> str:
     filename = with_media_extension(raw_name, download.from_message)
     if download.started:
         download.pending_rename = raw_name.strip()
+        _persist_download(download)
         return replace_filename(download.filename, filename)
 
     directory = os.path.dirname(os.path.join(folder.get(), download.filename.replace("/", os.sep)))
-    used = {filename.lower()}
+    used: set[str] = set()
     if download.batch:
         for sibling in download.batch.items:
             if sibling.download_id != download.id:
@@ -130,6 +138,7 @@ async def apply_rename(download: Download, raw_name: str) -> str:
     download.filename = replace_filename(download.filename, filename)
     if download.batch_item:
         download.batch_item.name = filename
+    _persist_download(download)
     if download.batch:
         await refresh_batch(download.batch, force=True)
     else:
@@ -160,8 +169,13 @@ async def rename_batch_folder(batch: Batch, raw_name: str) -> str:
         if queued.batch is batch and not queued.started:
             _move_download_into_folder(queued, new_folder)
             register_rename_target(queued)
+            _persist_download(queued)
     for pending in list(batch.pending_unique):
         _move_download_into_folder(pending, new_folder)
+    try:
+        queue_persist.add_batch(queue_persist.batch_record(batch))
+    except Exception:
+        logging.exception("持久化相册文件夹改名失败：%s", new_folder)
     await refresh_batch(batch, force=True)
     return new_folder
 

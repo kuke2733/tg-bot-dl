@@ -72,14 +72,11 @@ RESERVED_FILENAMES = {
     *(f"LPT{i}" for i in range(1, 10)),
 }
 RENAME_PREFIXES = ("重命名:", "重命名：","重命名 ", "rename:", "name:")
-KNOWN_EXTENSIONS = {
-    ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic",
-    ".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".ts", ".flv", ".3gp",
-    ".mp3", ".m4a", ".flac", ".wav", ".ogg", ".aac", ".opus",
-    ".pdf", ".zip", ".rar", ".7z", ".tar", ".gz", ".apk", ".exe", ".iso",
-    ".txt", ".csv", ".json", ".xml", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-    ".srt", ".ass", ".ssa", ".vtt", ".tgs",
-}
+# Linux 单节 NAME_MAX 一般是 255 字节；Windows 单节是 255 个 UTF-16 码元。
+# 两边都能过：按 UTF-8 255 字节截，并预留 _{n} 给去重。
+MAX_NAME_BYTES = 255
+UNIQUE_SUFFIX_RESERVE = 8
+URL_IN_TEXT = re.compile(r"https?://\S+|t\.me/\S+|www\.\S+", re.I)
 
 
 def message_media(message: Message):
@@ -113,6 +110,21 @@ def _collapse_name(name: str) -> str:
     return name.strip(" ._")
 
 
+def _clip_utf8_bytes(text: str, max_bytes: int) -> str:
+    if max_bytes <= 0 or not text:
+        return ""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    clipped = encoded[:max_bytes]
+    while clipped:
+        try:
+            return clipped.decode("utf-8").rstrip(" ._")
+        except UnicodeDecodeError:
+            clipped = clipped[:-1]
+    return ""
+
+
 def sanitize_filename(name: str) -> str:
     name = _collapse_name(os.path.basename((name or "").strip()))
     if not name:
@@ -122,7 +134,17 @@ def sanitize_filename(name: str) -> str:
         return ""
     if stem.upper() in RESERVED_FILENAMES:
         stem += "_"
-    return f"{stem}{ext}"[:180]
+    limit = MAX_NAME_BYTES - UNIQUE_SUFFIX_RESERVE
+    ext_bytes = len(ext.encode("utf-8"))
+    stem = _clip_utf8_bytes(stem, max(1, limit - ext_bytes))
+    return f"{stem}{ext}" if stem else ""
+
+
+def flatten_caption(text: str | None) -> str:
+    """去掉链接、#、换行，空白压成单空格，其余尽量保留。"""
+    value = URL_IN_TEXT.sub(" ", str(text or ""))
+    value = value.replace("#", "")
+    return " ".join(value.split()).strip(" \"'`")
 
 
 def caption_is_metadata(text: str | None) -> bool:
@@ -177,59 +199,26 @@ def strip_rename_prefix(text: str) -> str | None:
     return None
 
 
-def looks_like_filename(text: str) -> bool:
-    value = (text or "").strip().strip("\"'`")
-    if not value or "\n" in value or len(value) > 180:
-        return False
-    if "://" in value or value.startswith("/"):
-        return False
-    if re.search(r"[。！？!?；;]", value):
-        return False
-    name = os.path.basename(value)
-    stem, ext = os.path.splitext(name)
-    if not stem or not ext:
-        return False
-    return ext.lower() in KNOWN_EXTENSIONS or 2 <= len(ext) <= 8
-
-
-def looks_like_rename_name(text: str) -> bool:
-    """判断文本是否像重命名；可以不带后缀。"""
-    value = (text or "").strip().strip("\"'`")
-    if not value or "\n" in value or len(value) > 80:
-        return False
-    if "://" in value or value.startswith("/"):
-        return False
-    if re.search(r"[。！？!?；;]", value):
-        return False
-    if METADATA_LINE.match(value) or INVALID_NAME_CHARS.search(value):
-        return False
-    if looks_like_filename(value):
-        return True
-    name = os.path.basename(value)
-    # 不带后缀的名字，例如「电影」「假期照片」
-    if not name or name.endswith("."):
-        return False
-    _, ext = os.path.splitext(name)
-    if ext:
-        return False
-    return True
+def extract_caption_filename(text: str | None) -> str | None:
+    """媒体说明和回复改名同一套：去链接、#、换行，其余尽量留，超长再截。"""
+    if not text:
+        return None
+    if caption_is_metadata(text):
+        return None
+    flattened = flatten_caption(text)
+    if not flattened or flattened.startswith("/"):
+        return None
+    forced = strip_rename_prefix(flattened)
+    if forced is not None:
+        flattened = flatten_caption(forced)
+        if not flattened:
+            return None
+    return sanitize_filename(_collapse_name(flattened)) or None
 
 
 def extract_rename_name(text: str | None) -> str | None:
-    """从说明/独立文本里提取重命名。可不带后缀，也不必再加 >。"""
-    if not text:
-        return None
-    first = text.strip().splitlines()[0].strip().strip("\"'`")
-    if not first:
-        return None
-    forced = strip_rename_prefix(first)
-    if forced is not None:
-        return sanitize_filename(os.path.basename(forced)) or None
-    if caption_is_metadata(text):
-        return None
-    if looks_like_rename_name(first):
-        return sanitize_filename(os.path.basename(first)) or None
-    return None
+    """回复改名、先名字后文件，与说明取名同一套清洗。"""
+    return extract_caption_filename(text)
 
 
 def usable_file_name(name: str | None) -> str | None:
@@ -255,7 +244,7 @@ def resolve_filename(
     if filename:
         filename = os.path.basename(filename)
     if not filename and use_caption_name:
-        filename = extract_rename_name(message.caption)
+        filename = extract_caption_filename(message.caption)
     if not filename and media:
         filename = usable_file_name(getattr(media, "file_name", None))
     if not filename and media and kind == "audio":
@@ -269,14 +258,14 @@ def resolve_filename(
 
 
 def sanitize_folder_name(name: str) -> str:
-    return _collapse_name(name)[:80]
+    return _clip_utf8_bytes(_collapse_name(name), MAX_NAME_BYTES - UNIQUE_SUFFIX_RESERVE)
 
 
 def album_folder_name(messages: list[Message]) -> str:
     for message in messages:
-        text = extract_rename_name(message.caption)
+        text = extract_caption_filename(message.caption)
         if not text and not caption_is_metadata(message.caption):
-            text = (message.caption or "").strip()
+            text = flatten_caption(message.caption)
         text = sanitize_folder_name(text or "")
         if text:
             return text
