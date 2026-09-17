@@ -15,7 +15,6 @@ from bot.download.lifecycle import (
     stop_held_download,
 )
 from bot.download.speed import eta_seconds
-from bot.download.queueview import QUEUE_MAX_ROWS
 from bot.download.state import (
     active_batches,
     active_downloads,
@@ -157,15 +156,14 @@ def snapshot() -> dict:
         seen_ids.add(download.id)
         items.append(_file_item(download, "hold", hold_reason=str(reason)))
 
-    truncated = max(0, len(items) - QUEUE_MAX_ROWS)
     return {
         "ok": True,
         "available": True,
         "paused": bool(state.paused),
         "updated_at": time.time(),
         "total": len(items),
-        "truncated": truncated,
-        "items": items[:QUEUE_MAX_ROWS],
+        "truncated": 0,
+        "items": items,
     }
 
 

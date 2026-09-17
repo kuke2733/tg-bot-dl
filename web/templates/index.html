@@ -1362,9 +1362,7 @@
         seen.add(key);
         return true;
       });
-      const total = data.truncated ? (data.total || items.length) : items.length;
-      hint.textContent = (paused ? "已暂停 · " : "") + "共 " + total + " 个任务"
-        + (data.truncated ? "（仅显示前 " + items.length + " 个）" : "");
+      hint.textContent = (paused ? "已暂停 · " : "") + "共 " + items.length + " 个任务";
       syncQueueActions(true, paused);
       if (!items.length) {
         list.innerHTML = '<div class="queue-empty">' + (paused ? "队列已暂停，暂无任务" : "当前没有排队或进行中的下载") + "</div>";
