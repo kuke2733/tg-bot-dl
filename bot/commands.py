@@ -157,7 +157,7 @@ async def onIncomingMessage(_, message: Message):
         getattr(message.from_user, "id", None),
         message.id,
         media,
-        (message.text or message.caption or "")[:80],
+        str(message.text or message.caption or "")[:80],
     )
     if media:
         return

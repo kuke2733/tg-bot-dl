@@ -14,7 +14,7 @@ GIB = 1024 * MIB
 
 
 def clip_button_text(text: str, limit: int = 24) -> str:
-    text = text.replace("\n", " ")
+    text = str(text or "").replace("\n", " ")
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
