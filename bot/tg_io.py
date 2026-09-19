@@ -23,7 +23,8 @@ from bot.app import CONFIG_FOLDER, app
 
 FLOOD_PATH = Path(CONFIG_FOLDER) / "flood_until"
 GLOBAL_INTERVAL = 0.5
-PROGRESS_INTERVAL = 2.0
+# 群聊改消息大约 20 次/分钟；2 秒一次大文件会叠 FloodWait，5 秒约 12 次/分钟。
+PROGRESS_INTERVAL = 5.0
 RESTORE_INTERVAL = 1.25
 MAX_IMPORTANT_WAIT = 90.0
 MIN_EDIT_INTERVAL = PROGRESS_INTERVAL  # 兼容旧名
@@ -32,7 +33,10 @@ _flood_until = 0.0
 _flood_lock = threading.Lock()
 _flood_loaded = False
 _flood_notice_sent = False
+_flood_skip_logged = False
 _last_edit_text: dict[tuple[int, int], str] = {}
+_RECENT_LIMIT = 40
+_recent: deque[str] = deque(maxlen=_RECENT_LIMIT)
 
 _last_api = _last_progress = _last_restore = 0.0
 _worker: asyncio.Task | None = None
@@ -61,6 +65,35 @@ class _Job:
 _queue: deque[_Job] = deque()
 _progress: dict[tuple[int, int], _Job] = {}
 _progress_order: deque[tuple[int, int]] = deque()
+
+
+def _describe_job(job: _Job) -> str:
+    preview = " ".join(str(job.text or "").split())
+    if len(preview) > 80:
+        preview = preview[:79] + "…"
+    chat = job.chat_id
+    msg: int | str = "-"
+    if job.msg_key is not None:
+        chat = job.msg_key[0] if chat is None else chat
+        msg = job.msg_key[1]
+    elif job.message is not None:
+        if chat is None:
+            chat = getattr(getattr(job.message, "chat", None), "id", None)
+        msg = getattr(job.message, "id", "-") or "-"
+    return (
+        f"{job.op}/{job.kind.value} chat={chat} msg={msg} "
+        f"{'重要' if job.important else '普通'} 「{preview}」"
+    )
+
+
+def _note_outbound(job: _Job, result: str) -> None:
+    _recent.append(f"{datetime.now().strftime('%H:%M:%S')} {result} {_describe_job(job)}")
+
+
+def _recent_block() -> str:
+    if not _recent:
+        return "  近期出站：无"
+    return "  近期出站：\n" + "\n".join(f"    {item}" for item in _recent)
 
 
 def _load_flood() -> None:
@@ -104,15 +137,23 @@ def _persist_flood(until: float) -> None:
             logging.warning("写入限流截止时间失败：%s", FLOOD_PATH, exc_info=True)
 
 
-def record_flood_wait(wait: int | float) -> float:
+def record_flood_wait(wait: int | float, job: _Job | None = None, *, rpc: str = "") -> float:
     global _flood_notice_sent
     _load_flood()
     until = max(_flood_until, time() + max(0, int(wait or 0)) + 1)
     _persist_flood(until)
+    when = datetime.fromtimestamp(until).strftime("%Y-%m-%d %H:%M:%S")
+    trigger = f"\n  触发：{_describe_job(job)}" if job is not None else ""
+    rpc_text = f" {rpc}" if rpc else ""
     logging.warning(
-        "消息限流 %s 秒，惩罚至 %s",
+        "消息限流 %s 秒%s，惩罚至 %s（待发%d 进度待改%d）%s\n%s",
         int(wait or 0),
-        datetime.fromtimestamp(until).strftime("%Y-%m-%d %H:%M:%S"),
+        rpc_text,
+        when,
+        len(_queue),
+        len(_progress),
+        trigger,
+        _recent_block(),
     )
     if not _flood_notice_sent:
         _flood_notice_sent = True
@@ -192,12 +233,22 @@ async def _take() -> _Job | None:
 
 
 async def _run(job: _Job) -> Any:
+    global _flood_skip_logged
     left = flood_remaining()
+    if left <= 0:
+        _flood_skip_logged = False
     if left > 0:
         if not job.important:
+            if not _flood_skip_logged:
+                _flood_skip_logged = True
+                logging.info("限流惩罚中，跳过普通出站：%s", _describe_job(job))
             return _fail(job)
         if left > MAX_IMPORTANT_WAIT:
-            logging.warning("限流惩罚仍有 %.0f 秒，放弃本次重要消息", left)
+            logging.warning(
+                "限流惩罚仍有 %.0f 秒，放弃本次重要消息：%s",
+                left,
+                _describe_job(job),
+            )
             return _fail(job)
         await asyncio.sleep(left + 0.3)
 
@@ -217,12 +268,17 @@ async def _run(job: _Job) -> Any:
                 _last_edit_text[job.msg_key] = job.text
             result = True
         _touch(job.kind)
+        _note_outbound(job, "ok")
         return result
     except FloodWait as exc:
-        record_flood_wait(getattr(exc, "value", 0) or 0)
+        wait = getattr(exc, "value", 0) or 0
+        rpc = getattr(exc, "ID", "") or type(exc).__name__
+        _note_outbound(job, f"FloodWait {wait}s")
+        record_flood_wait(wait, job, rpc=rpc)
         return _fail(job)
     except Exception as exc:
-        logging.debug("出站消息失败（%s）：%s: %s", job.op, type(exc).__name__, exc)
+        _note_outbound(job, type(exc).__name__)
+        logging.debug("出站消息失败（%s）：%s: %s  %s", job.op, type(exc).__name__, exc, _describe_job(job))
         return _fail(job)
 
 

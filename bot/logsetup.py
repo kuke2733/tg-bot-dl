@@ -13,6 +13,11 @@ FILE_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
+def flag_enabled(value: object) -> bool:
+    """环境变量/配置里的开关：只有 1/true/yes/on 算开。'0' 和空都是关。"""
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 class FileFormatter(logging.Formatter):
     """文件里不要终端颜色，一条记录拆成多行时后续行缩进，方便阅读。"""
 

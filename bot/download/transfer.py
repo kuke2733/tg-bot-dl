@@ -191,7 +191,15 @@ async def download_with_resume(
                     prepare_temp_file(temp_path), wait=int(getattr(exc, "value", 0) or 0) + 1
                 ) from exc
             wait = int(getattr(exc, "value", 0) or 0) + 1
-            logging.warning("下载触发限流，等待 %s 秒后续传：%s", wait, save_path)
+            rpc = getattr(exc, "ID", "") or type(exc).__name__
+            logging.warning(
+                "下载通道限流 %s 秒（%s，第 %d/%d 次），等待后续传：%s",
+                wait,
+                rpc,
+                flood_retries,
+                MAX_FLOOD_RETRIES,
+                save_path,
+            )
             if on_retry:
                 result = on_retry(attempt, exc, prepare_temp_file(temp_path))
                 if asyncio.iscoroutine(result):

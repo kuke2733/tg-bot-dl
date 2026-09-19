@@ -7,7 +7,7 @@ from pyrogram.client import Client
 from pyrogram.connection.transport.tcp.tcp import TCP
 from pyrogram.session.session import Session
 
-from bot.logsetup import configure_logging
+from bot.logsetup import configure_logging, flag_enabled
 from bot.version import APP_VERSION, DEVICE_MODEL
 
 # 走代理时默认 2 秒超时太短，会话会不停重启，文件消息就收不到
@@ -36,7 +36,7 @@ load_dotenv(Path(CONFIG_FOLDER) / 'settings.env')
 BASE_FOLDER, CONFIG_FOLDER = default_folders()
 DL_FOLDER = BASE_FOLDER
 
-DEBUG = bool(getenv('DEBUG'))
+DEBUG = flag_enabled(getenv("DEBUG"))
 configure_logging(CONFIG_FOLDER, debug=DEBUG)
 logging.getLogger('pyrogram').setLevel(logging.INFO if DEBUG else logging.WARNING)
 logging.getLogger('pyrogram.connection').setLevel(logging.WARNING)

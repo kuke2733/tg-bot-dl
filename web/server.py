@@ -4,9 +4,10 @@ import signal
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, session
+from werkzeug.serving import WSGIRequestHandler
 
 from bot.version import VERSION
-from bot.logsetup import configure_logging
+from bot.logsetup import configure_logging, flag_enabled
 from web import settings, updates
 from web import panel_proxy
 from web.supervisor import supervisor
@@ -207,6 +208,11 @@ def api_downloads_stop_batch(batch_id: str):
     return _downloads_response(payload, status)
 
 
+class _QuietRequestHandler(WSGIRequestHandler):
+    def log_request(self, *_args, **_kwargs):
+        return
+
+
 def getenv_host() -> str:
     return os.getenv("WEB_HOST", "0.0.0.0")
 
@@ -224,7 +230,8 @@ def main():
     flask_debug = os.getenv("FLASK_DEBUG") or data.get("FLASK_DEBUG", "")
     debug = flask_debug.strip().lower() in ("1", "true", "yes", "on")
     manage_bot = _should_manage_bot(debug)
-    configure_logging(data["CONFIG_FOLDER"], debug=bool(data.get("DEBUG")))
+    debug_log = flag_enabled(data.get("DEBUG"))
+    configure_logging(data["CONFIG_FOLDER"], debug=debug_log)
 
     if manage_bot and not settings.missing_required(data):
         supervisor.start()
@@ -241,4 +248,13 @@ def main():
     logging.info("配置页 http://127.0.0.1:%s", port)
     if debug:
         logging.info("Flask 调试热重载已开启")
-    app.run(host=host, port=port, debug=debug, use_reloader=debug, threaded=True)
+    run_kw = {
+        "host": host,
+        "port": port,
+        "debug": debug,
+        "use_reloader": debug,
+        "threaded": True,
+    }
+    if not debug_log:
+        run_kw["request_handler"] = _QuietRequestHandler
+    app.run(**run_kw)
